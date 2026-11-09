@@ -1,2 +1,0 @@
-# NgirimPC
-Ngirim Desktop

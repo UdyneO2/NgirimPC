@@ -14,11 +14,10 @@ import kotlinx.coroutines.launch
 @Composable
 @Preview
 fun App() {
-    var statusText by remember { mutableStateOf("Ngirim PC Version - Siap digunakan") }
+    var statusText by remember { mutableStateOf("Ngirim PC (Windows Edition) - Siap digunakan") }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
-    // Cek pembaruan saat aplikasi pertama kali dibuka
     LaunchedEffect(Unit) {
         updateInfo = GithubUpdater.checkForUpdates()
     }
@@ -42,7 +41,7 @@ fun App() {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(text = "Ngirim Desktop", style = MaterialTheme.typography.h4)
+            Text(text = "Ngirim Desktop untuk Windows", style = MaterialTheme.typography.h4)
             Spacer(Modifier.height(16.dp))
             
             Text(statusText, style = MaterialTheme.typography.body1)
@@ -53,7 +52,7 @@ fun App() {
                     try {
                         statusText = NativeCore.stringFromJNI()
                     } catch (e: Exception) {
-                        statusText = "Error: Library C++ belum di-build atau dimuat.\nJalankan CMake terlebih dahulu."
+                        statusText = "Error: DLL belum dimuat. Pastikan native-lib.dll ada di java.library.path.\nLog: ${e.message}"
                     }
                 }) {
                     Text("Test Modul C++")
@@ -79,7 +78,7 @@ fun App() {
 }
 
 fun main() = application {
-    Window(onCloseRequest = ::exitApplication, title = "Ngirim PC") {
+    Window(onCloseRequest = ::exitApplication, title = "Ngirim PC - Windows") {
         App()
     }
 }

@@ -7,7 +7,7 @@ import java.net.URL
 import java.io.InputStreamReader
 
 object GithubUpdater {
-    const val CURRENT_VERSION = "v1.0.0" // Ganti saat rilis versi baru
+    const val CURRENT_VERSION = "v1.0.0"
     private const val GITHUB_API_URL = "https://api.github.com/repos/UdyneO2/NgirimPC/releases/latest"
     private const val RELEASE_PAGE_URL = "https://github.com/UdyneO2/NgirimPC/releases"
 
@@ -21,20 +21,13 @@ object GithubUpdater {
             if (connection.responseCode == HttpURLConnection.HTTP_OK) {
                 val response = InputStreamReader(connection.inputStream).readText()
                 
-                // Regex diperbaiki menggunakan standar escape string
+                // Regex diperbaiki, valid string di Kotlin
                 val tagRegex = "\"tag_name\"\\s*:\\s*\"([^\"]+)\"".toRegex()
                 val latestVersion = tagRegex.find(response)?.groupValues?.get(1)
 
                 if (latestVersion != null && latestVersion != CURRENT_VERSION) {
-                    val os = System.getProperty("os.name").lowercase()
-                    val ext = when {
-                        os.contains("win") -> ".msi"
-                        os.contains("mac") -> ".dmg"
-                        else -> ".deb"
-                    }
-                    
-                    // Regex diperbaiki menggunakan standar escape string
-                    val browserUrlRegex = "\"browser_download_url\"\\s*:\\s*\"([^\"]+$ext)\"".toRegex()
+                    // Hanya cari ekstensi Windows .exe atau .msi
+                    val browserUrlRegex = "\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.(msi|exe))\"".toRegex()
                     val downloadUrl = browserUrlRegex.find(response)?.groupValues?.get(1)
 
                     return@withContext UpdateInfo(

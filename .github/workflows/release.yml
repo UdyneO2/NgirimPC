@@ -1,4 +1,4 @@
-name: Build and Release PC Version
+name: Build and Release Windows PC
 
 on:
   push:
@@ -6,51 +6,46 @@ on:
       - 'v*'
 
 jobs:
-  build-desktop:
-    name: Build Desktop on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+  build-windows:
+    name: Build Desktop on Windows
+    runs-on: windows-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      # Menggunakan v5 sesuai anjuran log
       - name: Setup Java (Zulu JDK 17)
         uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      # Langkah chmod dihapus karena kita tidak menggunakan ./gradlew
-
       - name: Build C++ Native Lib
         run: |
           mkdir -p src/main/cpp/build
           cd src/main/cpp/build
           cmake ..
-          cmake --build .
+          cmake --build . --config Release
+        shell: bash
 
       - name: Copy Native Lib to Resources
         run: |
           mkdir -p src/main/resources
-          cp src/main/cpp/build/*native-lib* src/main/resources/ || true
+          # Copy DLL from Release folder which is default for Visual Studio CMake generator on Windows
+          cp src/main/cpp/build/Release/*native-lib*.dll src/main/resources/ || cp src/main/cpp/build/*native-lib*.dll src/main/resources/ || true
         shell: bash
 
-      # Memanggil 'gradle' langsung bawaan dari GitHub Actions
       - name: Build Compose Desktop Distribution
         run: gradle packageReleaseDistributionForCurrentOS
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-builds-${{ matrix.os }}
+          name: windows-build
           path: build/compose/binaries/main/app/
 
   create-release:
     name: Create GitHub Release
-    needs: build-desktop
+    needs: build-windows
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -60,10 +55,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            desktop-builds-windows-latest/*.msi
-            desktop-builds-windows-latest/*.exe
-            desktop-builds-macos-latest/*.dmg
-            desktop-builds-ubuntu-latest/*.deb
+            windows-build/*.msi
+            windows-build/*.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
