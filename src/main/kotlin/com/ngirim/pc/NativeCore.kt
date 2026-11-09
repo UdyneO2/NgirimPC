@@ -16,6 +16,5 @@ object NativeCore {
     external fun pollAction(): String
     
     // TODO: Definisikan sisa jembatan state C++ disini
-    external fun setShizuku(ok: Boolean, msg: String)
-    external fun log(msg: String)
+        external fun log(msg: String)
 }

@@ -2,7 +2,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include "backends/imgui_impl_glfw.h"
-#include <unistd.h>
+
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
@@ -34,8 +34,7 @@ struct Pane {
 struct State {
     std::mutex mu;
     // ---- umum
-    bool shizuku = false;
-    std::string shizukuMsg = "Menunggu Shizuku...";
+    
     std::deque<std::string> actions;
     std::vector<std::string> logs;
     bool logDirty = false;
@@ -570,7 +569,7 @@ void drawFiles() {
     if (wrapButton(nSel == (int)S.fm.size() && nSel > 0 ? "Batal##fm" : "Semua##fm", first))
         for (auto& e : S.fm) e.sel = !(nSel == (int)S.fm.size() && nSel > 0);
     if (wrapButton("Segarkan##fm", first)) act("FM|REF");
-    ImGui::BeginDisabled(!S.shizuku);
+    ImGui::BeginDisabled(false);
     if (wrapButton("Backup APK##fm", first, S.aBusy)) { S.apkOpen = true; act("APK|OPEN"); }
     ImGui::EndDisabled();
 
@@ -679,7 +678,7 @@ void drawApk() {
 
     ImGui::TextColored(g_pal.dim, "%d aplikasi  |  %d dipilih (%s)", (int)S.apps.size(), n, fmtSize((double)sizeSel(S.apps)).c_str());
     if (!S.aBusy) {
-        ImGui::BeginDisabled(!S.shizuku || n == 0);
+        ImGui::BeginDisabled(n == 0);
         std::string l = std::string("BACKUP ") + std::to_string(n) + " APLIKASI" + (S.apkFmt == 0 ? " KE XAPK" : "");
         ImGui::PushStyleColor(ImGuiCol_Button, g_pal.accent);
         ImGui::PushStyleColor(ImGuiCol_Text, g_pal.onAccent);
@@ -705,8 +704,7 @@ void drawNet() {
     if (!S.permOk) {
         if (ImGui::Button("Berikan izin / periksa ulang", ImVec2(-FLT_MIN, 52.f * d))) act("NET_PERM");
     }
-    if (!S.shizuku) ImGui::TextDisabled("Shizuku harus terhubung dulu.");
-    ImGui::BeginDisabled(!(S.permOk && S.shizuku));
+    ImGui::BeginDisabled(!S.permOk);
 
     // ---- Terima (receiver)
     ImGui::SeparatorText("Terima");
@@ -891,14 +889,14 @@ void drawFtp() {
 
     if (!S.fBusy) {
         const float bw = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-        ImGui::BeginDisabled(!S.shizuku || nL == 0);
+        ImGui::BeginDisabled(nL == 0);
         if (ImGui::Button("Kiri  >>  Kanan", ImVec2(bw, 50.f * d))) {
             act("FP_XFER|0|" + std::to_string(S.fMove) + "|" + idxSel(S.pane[0].e));
             S.fBusy = true; S.fDone = 0; S.fTotal = 0; S.fSpeed = 0; S.fCur = "Menyiapkan...";
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(!S.shizuku || nR == 0);
+        ImGui::BeginDisabled(nR == 0);
         if (ImGui::Button("Kiri  <<  Kanan", ImVec2(-FLT_MIN, 50.f * d))) {
             act("FP_XFER|1|" + std::to_string(S.fMove) + "|" + idxSel(S.pane[1].e));
             S.fBusy = true; S.fDone = 0; S.fTotal = 0; S.fSpeed = 0; S.fCur = "Menyiapkan...";
@@ -954,11 +952,7 @@ void drawSettings() {
     if (ImGui::Button("Ubah nama perangkat")) act("SET_NAME");
     dimWrapped("Nama baru dipakai saat Terima dinyalakan ulang.");
 
-    ImGui::SeparatorText("Shizuku");
-    ImGui::TextColored(S.shizuku ? g_pal.ok : g_pal.err, "%s", S.shizukuMsg.c_str());
-    if (ImGui::Button("Hubungkan ulang")) act("CONNECT");
-    ImGui::SameLine();
-    if (ImGui::Button("Buka app Shizuku")) act("OPEN_SHIZUKU");
+
 
     ImGui::SeparatorText("Tentang");
     ImGui::Text("Ngirim %s", kVersion);
@@ -1046,22 +1040,11 @@ void drawUI() {
         const ImU32 white = IM_COL32(255, 255, 255, 255);
         dl->AddText(ImVec2(10.f * d, (barH - th) * 0.5f), white, "Ngirim");
         dl->AddText(ImVec2(10.f * d + ImGui::CalcTextSize("Ngirim ").x, (barH - th) * 0.5f), IM_COL32(255, 255, 255, 190), kVersion);
-        const char* st = S.shizuku ? "Shizuku" : "Shizuku terputus";
-        ImVec2 ts = ImGui::CalcTextSize(st);
-        float x = io.DisplaySize.x - ts.x - 14.f * d;
-        dl->AddText(ImVec2(x, (barH - th) * 0.5f), white, st);
-        dl->AddCircleFilled(ImVec2(x - 12.f * d, barH * 0.5f), 6.f * d, S.shizuku ? IM_COL32(120, 255, 140, 255) : IM_COL32(255, 120, 100, 255));
+
     }
     ImGui::SetCursorPosY(barH + 8.f * d);
 
-    if (!S.shizuku) {
-        ImGui::PushStyleColor(ImGuiCol_Text, g_pal.err);
-        ImGui::TextWrapped("%s", S.shizukuMsg.c_str());
-        ImGui::PopStyleColor();
-        if (ImGui::Button("Hubungkan Shizuku")) act("CONNECT");
-        ImGui::SameLine();
-        if (ImGui::Button("Buka app Shizuku")) act("OPEN_SHIZUKU");
-    }
+
 
     if (S.tabReq >= 0) S.apkOpen = false;
     if (S.bOpen) {
@@ -1222,12 +1205,7 @@ void dead_touch(JNIEnv*, jclass, jint action, jfloat x, jfloat y) {
     }
 }
 
-JNIEXPORT void JNICALL Java_com_ngirim_pc_NativeCore_setShizuku(JNIEnv* e, jclass, jboolean ok, jstring msg) {
-    std::string m = js(e, msg);
-    std::lock_guard<std::mutex> lk(S.mu);
-    S.shizuku = ok;
-    S.shizukuMsg = m;
-}
+
 
 JNIEXPORT void JNICALL Java_com_ngirim_pc_NativeCore_log(JNIEnv* e, jclass, jstring msg) {
     std::string m = js(e, msg);
