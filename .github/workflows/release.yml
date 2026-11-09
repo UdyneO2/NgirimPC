@@ -11,7 +11,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: ubuntu-latest
+        # Wajib menggunakan ketiga OS ini agar .exe, .dmg, dan .deb bisa di-build
+        os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -22,16 +23,12 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
           
-      - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v1.13
-        with:
-          cmake-version: '3.22.x'
+      # Action setup-cmake dihapus karena CMake sudah otomatis tersedia di GitHub Runners
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
         if: runner.os != 'Windows'
 
-      # Build native library (C++)
       - name: Build C++ Native Lib
         run: |
           mkdir -p src/main/cpp/build
@@ -39,7 +36,6 @@ jobs:
           cmake ..
           cmake --build .
 
-      # Copy built library to resources so it's packaged in the jar (Adjust extensions per OS if needed)
       - name: Copy Native Lib to Resources
         run: |
           mkdir -p src/main/resources
@@ -50,10 +46,10 @@ jobs:
         run: ./gradlew packageReleaseDistributionForCurrentOS
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: desktop-builds-${{ matrix.os }}
-          path: build/compose/binaries/main/app/*.*
+          path: build/compose/binaries/main/app/
 
   create-release:
     name: Create GitHub Release
@@ -61,10 +57,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             desktop-builds-windows-latest/*.msi
