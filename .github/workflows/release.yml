@@ -1,4 +1,4 @@
-name: Build and Release Windows PC
+name: Build C++ ImGui UI
 
 on:
   push:
@@ -7,14 +7,13 @@ on:
 
 jobs:
   build-windows:
-    name: Build Desktop on Windows
     runs-on: windows-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup Java (Zulu JDK 17)
-        uses: actions/setup-java@v5
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -30,11 +29,10 @@ jobs:
       - name: Copy Native Lib to Resources
         run: |
           mkdir -p src/main/resources
-          # Copy DLL from Release folder which is default for Visual Studio CMake generator on Windows
-          cp src/main/cpp/build/Release/*native-lib*.dll src/main/resources/ || cp src/main/cpp/build/*native-lib*.dll src/main/resources/ || true
+          cp src/main/cpp/build/Release/*native-lib*.dll src/main/resources/ || true
         shell: bash
 
-      - name: Build Compose Desktop Distribution
+      - name: Build Desktop Distribution
         run: gradle packageReleaseDistributionForCurrentOS
 
       - name: Upload Artifacts
@@ -42,21 +40,3 @@ jobs:
         with:
           name: windows-build
           path: build/compose/binaries/main/app/
-
-  create-release:
-    name: Create GitHub Release
-    needs: build-windows
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            windows-build/*.msi
-            windows-build/*.exe
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

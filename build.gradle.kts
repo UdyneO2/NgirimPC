@@ -9,10 +9,10 @@ repositories {
 }
 
 dependencies {
-    implementation(compose.desktop.currentOs)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
 }
 
+// Digunakan khusus untuk membungkus .msi / .exe saja, bukan untuk merender UI
 compose.desktop {
     application {
         mainClass = "com.ngirim.pc.MainKt"
