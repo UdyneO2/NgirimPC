@@ -21,9 +21,8 @@ object GithubUpdater {
             if (connection.responseCode == HttpURLConnection.HTTP_OK) {
                 val response = InputStreamReader(connection.inputStream).readText()
                 
-                // Regex sederhana untuk ekstrak tag_name. 
-                // Sangat direkomendasikan menggunakan kotlinx.serialization di produksi.
-                val tagRegex = \"\"\"\"tag_name\"\s*:\s*\"([^\"]+)\"\"\"\".toRegex()
+                // Regex diperbaiki menggunakan standar escape string
+                val tagRegex = "\"tag_name\"\\s*:\\s*\"([^\"]+)\"".toRegex()
                 val latestVersion = tagRegex.find(response)?.groupValues?.get(1)
 
                 if (latestVersion != null && latestVersion != CURRENT_VERSION) {
@@ -34,7 +33,8 @@ object GithubUpdater {
                         else -> ".deb"
                     }
                     
-                    val browserUrlRegex = \"\"\"\"browser_download_url\"\s*:\s*\"([^\"]+$ext)\"\"\"\".toRegex()
+                    // Regex diperbaiki menggunakan standar escape string
+                    val browserUrlRegex = "\"browser_download_url\"\\s*:\\s*\"([^\"]+$ext)\"".toRegex()
                     val downloadUrl = browserUrlRegex.find(response)?.groupValues?.get(1)
 
                     return@withContext UpdateInfo(
