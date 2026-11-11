@@ -1,5 +1,4 @@
 #include "mdns.h"
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <algorithm>
 #include <chrono>
 #include <cstring>

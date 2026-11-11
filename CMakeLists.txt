@@ -37,7 +37,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(ng_core PUBLIC Threads::Threads)
 if(WIN32)
   target_link_libraries(ng_core PUBLIC ws2_32 iphlpapi)
-  target_compile_definitions(ng_core PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  # FIX: _WINSOCK_DEPRECATED_NO_WARNINGS ditambahkan di sini untuk menghilangkan warning inet_addr
+  target_compile_definitions(ng_core PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
 endif()
 
 enable_testing()
@@ -71,4 +72,7 @@ if(WIN32 AND NGIRIMPC_BUILD_APP)
     $<$<COMPILE_LANGUAGE:CXX>:NGIRIMPC_VERSION="${NGIRIMPC_VERSION}">)
   target_link_libraries(NgirimPC PRIVATE ng_core winhttp d3d11 dxgi dwmapi shell32 ole32 uuid user32 gdi32 advapi32)
   set_target_properties(NgirimPC PROPERTIES OUTPUT_NAME "NgirimPC")
+  
+  # FIX: Mematikan auto-manifest dari MSVC karena resource .rc sudah memilikinya
+  target_link_options(NgirimPC PRIVATE "/MANIFEST:NO")
 endif()
