@@ -42,12 +42,13 @@ struct Fake {
     }
 };
 
-static std::string rel(const std::string& tag, bool pre, const std::string& extraAssetFields, bool withShaAsset, size_t size) {
+static std::string rel(const std::string& tag, bool pre, const std::string& extraAssetFields, bool withShaAsset, size_t size,
+                       const std::string& exeName = "NgirimPC.exe") {
     std::ostringstream o;
     o << "[{\"tag_name\":\"" << tag << "\",\"draft\":false,\"prerelease\":" << (pre ? "true" : "false")
-      << ",\"body\":\"catatan\",\"assets\":[{\"name\":\"NgirimPC.exe\",\"browser_download_url\":\"https://x/NgirimPC.exe\",\"size\":"
+      << ",\"body\":\"catatan\",\"assets\":[{\"name\":\"" << exeName << "\",\"browser_download_url\":\"https://x/" << exeName << "\",\"size\":"
       << size << extraAssetFields << "}";
-    if (withShaAsset) o << ",{\"name\":\"NgirimPC.exe.sha256\",\"browser_download_url\":\"https://x/NgirimPC.exe.sha256\"}";
+    if (withShaAsset) o << ",{\"name\":\"" << exeName << ".sha256\",\"browser_download_url\":\"https://x/" << exeName << ".sha256\"}";
     o << "]}]";
     return o.str();
 }
@@ -82,6 +83,11 @@ int main() {
     { // jalur sukses lewat aset .sha256 ("hex  nama")
         Fake f; f.exeBytes = exe; f.shaText = good + "  NgirimPC.exe\n";
         f.releasesJson = rel("v2.1.0", false, "", true, exe.size());
+        CHECK(run(f, tmp, "2.0.0", false, true).state == UpdState::Ready);
+    }
+    { // nama exe memuat versi (NgirimPC-v2.1.0.exe) + sha256 terpisah
+        Fake f; f.exeBytes = exe; f.shaText = good + "  NgirimPC-v2.1.0.exe\n";
+        f.releasesJson = rel("v2.1.0", false, "", true, exe.size(), "NgirimPC-v2.1.0.exe");
         CHECK(run(f, tmp, "2.0.0", false, true).state == UpdState::Ready);
     }
     { // checksum salah -> gagal, file dihapus, tidak dipasang

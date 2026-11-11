@@ -37,17 +37,19 @@ find_package(Threads REQUIRED)
 target_link_libraries(ng_core PUBLIC Threads::Threads)
 if(WIN32)
   target_link_libraries(ng_core PUBLIC ws2_32 iphlpapi)
-  # FIX: _WINSOCK_DEPRECATED_NO_WARNINGS ditambahkan di sini untuk menghilangkan warning inet_addr
   target_compile_definitions(ng_core PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
 endif()
 
-enable_testing()
-add_executable(ng_updater_test tests/updater_test.cpp)
-target_link_libraries(ng_updater_test PRIVATE ng_core)
-add_test(NAME updater COMMAND ng_updater_test)
-add_executable(ng_proto_test tests/proto_test.cpp)
-target_link_libraries(ng_proto_test PRIVATE ng_core)
-add_test(NAME protocol COMMAND ng_proto_test)
+option(NGIRIMPC_BUILD_TESTS "Bangun tes unit (tidak dipakai di CI)" OFF)
+if(NGIRIMPC_BUILD_TESTS)
+  enable_testing()
+  add_executable(ng_updater_test tests/updater_test.cpp)
+  target_link_libraries(ng_updater_test PRIVATE ng_core)
+  add_test(NAME updater COMMAND ng_updater_test)
+  add_executable(ng_proto_test tests/proto_test.cpp)
+  target_link_libraries(ng_proto_test PRIVATE ng_core)
+  add_test(NAME protocol COMMAND ng_proto_test)
+endif()
 
 # ---------------------------------------------------------------- aplikasi Windows
 option(NGIRIMPC_BUILD_APP "Bangun NgirimPC.exe (butuh UI lengkap)" ON)
@@ -71,8 +73,9 @@ if(WIN32 AND NGIRIMPC_BUILD_APP)
   target_compile_definitions(NgirimPC PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:NGIRIMPC_VERSION="${NGIRIMPC_VERSION}">)
   target_link_libraries(NgirimPC PRIVATE ng_core winhttp d3d11 dxgi dwmapi shell32 ole32 uuid user32 gdi32 advapi32)
+  # Manifest sudah ditanam lewat res/ngirimpc.rc; tanpa ini linker membuat manifest kedua -> CVT1100 duplicate resource.
+  if(MSVC)
+    target_link_options(NgirimPC PRIVATE /MANIFEST:NO)
+  endif()
   set_target_properties(NgirimPC PROPERTIES OUTPUT_NAME "NgirimPC")
-  
-  # FIX: Mematikan auto-manifest dari MSVC karena resource .rc sudah memilikinya
-  target_link_options(NgirimPC PRIVATE "/MANIFEST:NO")
 endif()

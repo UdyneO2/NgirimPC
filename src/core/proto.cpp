@@ -11,12 +11,6 @@
 
 #include "sha256.h"
 
-#ifdef _WIN32
-#define popen _popen
-#define pclose _pclose
-#endif
-
-
 namespace ng {
 
 static const int32_t MAGIC = 0x4E475231;  // "NGR1"

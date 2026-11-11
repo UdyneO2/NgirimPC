@@ -236,15 +236,21 @@ UpdateInfo pickRelease(const std::string& json, const std::string& current, bool
         int64_t size = 0;
         const Json* assets = r->get("assets");
         if (assets && assets->t == Json::Arr) {
+            // Nama exe boleh membawa versi (mis. NgirimPC-v2.0.0.exe): cocokkan "ngirimpc*.exe", sha256 = nama exe + ".sha256"
+            std::string exeName;
             for (auto& as : assets->a) {
-                std::string nm = lower(as.str("name")), url = as.str("browser_download_url");
-                if (nm == "ngirimpc.exe") {
-                    exe = url;
-                    digest = lower(as.str("digest"));
-                    const Json* sz = as.get("size");
-                    size = sz && sz->t == Json::Num ? (int64_t)sz->n : 0;
-                } else if (nm == "ngirimpc.exe.sha256") sha = url;
+                std::string nm = lower(as.str("name"));
+                if (nm.rfind("ngirimpc", 0) != 0 || nm.size() < 12 || nm.compare(nm.size() - 4, 4, ".exe") != 0) continue;
+                if (!exe.empty()) break;  // ambil exe pertama saja
+                exeName = nm;
+                exe = as.str("browser_download_url");
+                digest = lower(as.str("digest"));
+                const Json* sz = as.get("size");
+                size = sz && sz->t == Json::Num ? (int64_t)sz->n : 0;
             }
+            if (!exe.empty())
+                for (auto& as : assets->a)
+                    if (lower(as.str("name")) == exeName + ".sha256") sha = as.str("browser_download_url");
         }
         if (exe.empty()) continue;  // rilis belum lengkap: lewati
         if (!best || compareVersions(tag, bestTag) > 0) { best = r; bestTag = tag; bestExe = exe; bestSha = sha; bestDigest = digest; bestSize = size; }

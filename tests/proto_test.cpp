@@ -10,15 +10,14 @@
 #include <thread>
 
 #include "../src/core/proto.h"
-#include "../src/core/sha256.h"
-#include "../src/core/mdns.h"
-#include "../src/core/updater_core.h"
-
 
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
 #endif
+#include "../src/core/sha256.h"
+#include "../src/core/mdns.h"
+#include "../src/core/updater_core.h"
 
 using namespace ng;
 

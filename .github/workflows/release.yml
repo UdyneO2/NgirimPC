@@ -13,20 +13,28 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tentukan versi
+      - name: Tentukan versi dan nama file
         id: ver
         shell: bash
         run: |
           TAG="${{ github.event.inputs.version || github.ref_name }}"
+          if ! echo "$TAG" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.]+)?$'; then
+            echo "Tag '$TAG' tidak valid. Gunakan format vX.Y.Z atau vX.Y.Z-alpha.1"; exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=${TAG#v}" >> "$GITHUB_OUTPUT"
-          if echo "$TAG" | grep -qiE 'alpha|beta|rc'; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
+          echo "exe=NgirimPC-$TAG.exe" >> "$GITHUB_OUTPUT"
+          if echo "$TAG" | grep -qE -- '-(alpha|beta|rc)'; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
 
       - name: Configure
         shell: bash
@@ -36,15 +44,14 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Siapkan aset (exe + SHA-256)
-        id: asset
         shell: pwsh
+        env:
+          EXE: ${{ steps.ver.outputs.exe }}
         run: |
-          $TAG = "${{ steps.ver.outputs.tag }}"
-          $EXE_NAME = "NgirimPC-$TAG.exe"
-          
-          Copy-Item build/Release/NgirimPC.exe $EXE_NAME
-          $h = (Get-FileHash $EXE_NAME -Algorithm SHA256).Hash.ToLower()
-          "$h  $EXE_NAME" | Out-File -FilePath "$EXE_NAME.sha256" -Encoding ascii
+          if (-not (Test-Path build/Release/NgirimPC.exe)) { throw "build/Release/NgirimPC.exe tidak ditemukan" }
+          Copy-Item build/Release/NgirimPC.exe $env:EXE
+          $h = (Get-FileHash $env:EXE -Algorithm SHA256).Hash.ToLower()
+          "$h  $env:EXE" | Out-File -FilePath "$env:EXE.sha256" -Encoding ascii
           Write-Host "SHA-256: $h"
 
       - name: Catatan rilis dari CHANGELOG
@@ -60,6 +67,7 @@ jobs:
           name: NgirimPC ${{ steps.ver.outputs.tag }}
           body_path: notes.md
           prerelease: ${{ steps.ver.outputs.pre == 'true' }}
+          fail_on_unmatched_files: true
           files: |
-            NgirimPC-${{ steps.ver.outputs.tag }}.exe
-            NgirimPC-${{ steps.ver.outputs.tag }}.exe.sha256
+            ${{ steps.ver.outputs.exe }}
+            ${{ steps.ver.outputs.exe }}.sha256
