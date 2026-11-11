@@ -172,7 +172,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
     wc.hInstance = inst;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hIconSm = wc.hIcon;
-    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
     wc.lpszClassName = L"NgirimPCWindow";
     RegisterClassExW(&wc);
 
