@@ -21,8 +21,10 @@
 #include "../core/mdns.h"
 #include "../core/proto.h"
 #include "../core/sha256.h"
+#include "../core/updater.h"
 #include "../core/updater_core.h"
 #include "../win/plat.h"
+#include "../win/update_io.h"
 
 #ifndef NGIRIMPC_VERSION
 #define NGIRIMPC_VERSION "0.0"
@@ -143,7 +145,7 @@ ImFont* g_mono = nullptr;
 ImFont* g_big = nullptr;
 
 const char* kChangelog[] = {
-    "v1.0",
+    "v2.0.0 (dalam pengembangan)",
     "- Rilis pertama Ngirim PC untuk Windows 10/11, kompatibel dengan Ngirim Android v2.0",
     "- File manager: salin, potong, tempel, hapus (Tempat Sampah), ganti nama, folder baru, akses cepat",
     "- Wi-Fi: terima dengan PIN, perangkat aktif otomatis (mDNS), kirim file dan folder, tarik-lepas",
@@ -389,3 +391,331 @@ void saveSettings() {
       << "\nbrowse=" << (U.allowBrowse ? 1 : 0) << "\nname=" << U.devName << "\nrecv=" << U.recvDir << "\n";
     for (auto& b : U.bookmarks) f << "bm=" << b << "\n";
 }
+
+// ------------------------------------------------------------------ pembaruan (UI)
+std::unique_ptr<ng::Updater> g_upd;
+bool g_updManual = false, g_updDismissed = false, g_autoChecked = false;
+std::string g_applyErr;
+
+void startCheck(bool manual) {
+    if (!g_upd) return;
+    g_updManual = manual;
+    if (manual) { g_updDismissed = false; g_applyErr.clear(); }
+    g_upd->check(U.preRelease);
+}
+
+void drawUpdateBanner() {
+    if (!g_upd) return;
+    using St = ng::UpdState;
+    const ng::UpdSnapshot s = g_upd->snapshot();
+    bool show = false;
+    switch (s.state) {
+        case St::Available: show = !g_updDismissed; break;
+        case St::Downloading: case St::Verifying: case St::Ready: show = true; break;
+        case St::Checking: case St::UpToDate: case St::Failed: show = g_updManual; break;
+        default: break;
+    }
+    if (!show) return;
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, g_pal.accent);
+    ImGui::PushStyleColor(ImGuiCol_Text, g_pal.onAccent);
+    ImGui::BeginChild("##upd", ImVec2(0, ImGui::GetFrameHeight() * 1.7f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+    ImGui::AlignTextToFramePadding();
+    const float right = ImGui::GetContentRegionAvail().x;
+    auto btnAt = [&](const char* label, float fromRight) {
+        ImGui::SameLine(right - fromRight);
+        return ImGui::Button(label);
+    };
+    const float bw = 150.f * g_scale;
+    switch (s.state) {
+        case St::Available: {
+            std::string t = "Versi baru " + s.info.tag + " tersedia";
+            if (s.info.size > 0) t += " (" + fmtSize((double)s.info.size) + ")";
+            ImGui::TextUnformatted(t.c_str());
+            if (btnAt("Perbarui", bw)) g_upd->download();
+            if (btnAt("Nanti", bw * 0.5f)) g_updDismissed = true;
+            break;
+        }
+        case St::Downloading: {
+            char ov[96];
+            std::snprintf(ov, sizeof ov, "Mengunduh %d%% (%s / %s)", (int)(s.frac * 100), fmtSize((double)s.done).c_str(),
+                          fmtSize((double)s.total).c_str());
+            ImGui::ProgressBar((float)s.frac, ImVec2(right - bw, 0), ov);
+            if (btnAt("Batal", bw * 0.6f)) g_upd->cancel();
+            break;
+        }
+        case St::Verifying:
+            ImGui::TextUnformatted("Memverifikasi SHA-256...");
+            break;
+        case St::Ready:
+            ImGui::TextUnformatted(g_applyErr.empty() ? "Pembaruan siap dipasang" : g_applyErr.c_str());
+            if (btnAt("Pasang dan mulai ulang", bw * 1.9f)) {
+                std::string err;
+                if (g_upd->apply(err)) plat::requestQuit();
+                else { g_applyErr = err; addLog("ERR " + err); }
+            }
+            break;
+        case St::Checking:
+            ImGui::TextUnformatted("Memeriksa pembaruan...");
+            break;
+        case St::UpToDate:
+            ImGui::Text("Sudah versi terbaru (%s)", kVersion);
+            if (btnAt("OK", bw * 0.4f)) g_updManual = false;
+            break;
+        case St::Failed:
+            ImGui::TextUnformatted(("Pembaruan gagal: " + s.error).c_str());
+            if (btnAt("Tutup", bw * 0.6f)) g_updManual = false;
+            break;
+        default: break;
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+}
+
+// ------------------------------------------------------------------ tab Lokal (purwarupa: jelajah baca-saja)
+void refreshPane(Pane& p) {
+    p.e.clear();
+    p.err.clear();
+    if (p.path.empty()) {
+        for (auto& d : plat::drives()) { Entry e; e.name = d; e.dir = true; p.e.push_back(e); }
+    } else {
+        std::string err;
+        for (auto& le : ng::listDir(ng::P(p.path), err)) {
+            if (le.hidden && !U.showHidden) continue;
+            Entry e; e.name = le.name; e.size = le.size; e.mtime = le.mtime; e.dir = le.dir;
+            p.e.push_back(e);
+        }
+        p.err = err;
+    }
+    std::sort(p.e.begin(), p.e.end(), [](const Entry& a, const Entry& b) {
+        if (a.dir != b.dir) return a.dir;
+        return icmp(a.name, b.name) < 0;
+    });
+    p.dirty = false;
+}
+
+void goTo(Pane& p, const std::string& path) { p.path = path; p.dirty = true; }
+
+void drawLocal() {
+    Pane& p = U.fm;
+    if (p.path.empty() && p.dirty && U.quick.empty()) {
+        U.quick = {{"Desktop", plat::knownFolder("desktop")}, {"Dokumen", plat::knownFolder("documents")},
+                   {"Unduhan", plat::knownFolder("downloads")}, {"Gambar", plat::knownFolder("pictures")}};
+        for (auto& d : plat::drives()) U.quick.push_back({"Disk " + d, d});
+        p.path = plat::knownFolder("downloads");
+    }
+    if (p.dirty) refreshPane(p);
+
+    std::string go;
+    bool nav = false;
+    ImGui::BeginChild("##quick", ImVec2(170.f * g_scale, 0), ImGuiChildFlags_Borders);
+    ImGui::TextColored(g_pal.dim, "Akses cepat");
+    for (auto& q : U.quick)
+        if (ImGui::Selectable(q.first.c_str(), p.path == q.second)) { go = q.second; nav = true; }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    ImGui::BeginGroup();
+    if (ImGui::Button("Naik")) { go = parentLocal(p.path); nav = true; }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(p.path.empty() ? "Komputer ini" : p.path.c_str());
+
+    ImGui::BeginDisabled();
+    for (const char* b : {"Salin", "Potong", "Tempel", "Hapus", "Ganti nama", "Folder baru", "Kirim ke Wi-Fi"}) {
+        ImGui::Button(b);
+        ImGui::SameLine();
+    }
+    ImGui::EndDisabled();
+    ImGui::NewLine();
+    ImGui::TextColored(g_pal.dim, "Operasi file (salin, potong, hapus, kirim) menyusul di Part 3");
+
+    if (!p.err.empty()) ImGui::TextColored(g_pal.err, "%s", p.err.c_str());
+    if (ImGui::BeginTable("##files", 3, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable,
+                          ImVec2(0, 0))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Nama", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Ukuran", ImGuiTableColumnFlags_WidthFixed, 100.f * g_scale);
+        ImGui::TableSetupColumn("Diubah", ImGuiTableColumnFlags_WidthFixed, 150.f * g_scale);
+        ImGui::TableHeadersRow();
+        for (size_t i = 0; i < p.e.size(); i++) {
+            Entry& e = p.e[i];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID((int)i);
+            if (e.dir) ImGui::PushStyleColor(ImGuiCol_Text, g_pal.accent);
+            if (ImGui::Selectable(e.name.c_str(), e.sel, ImGuiSelectableFlags_SpanAllColumns |
+                                                               ImGuiSelectableFlags_AllowDoubleClick)) {
+                for (auto& o : p.e) o.sel = false;
+                e.sel = true;
+                if (ImGui::IsMouseDoubleClicked(0) && e.dir) { go = joinLocal(p.path, e.name); nav = true; }
+            }
+            if (e.dir) ImGui::PopStyleColor();
+            ImGui::PopID();
+            ImGui::TableSetColumnIndex(1);
+            if (!e.dir) ImGui::TextUnformatted(fmtSize((double)e.size).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(fmtDate(e.mtime).c_str());
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndGroup();
+    if (nav) goTo(p, go);
+}
+
+// ------------------------------------------------------------------ tab Wi-Fi dan FTP (kerangka)
+void drawWifi() {
+    ImGui::TextColored(g_pal.dim, "Terima");
+    ImGui::BeginDisabled();
+    bool off = false;
+    ImGui::Checkbox("Aktifkan penerimaan", &off);
+    ImGui::EndDisabled();
+    ImGui::Text("Perangkat ini: %s", U.devName.c_str());
+    ImGui::Text("Folder simpan: %s", U.recvDir.c_str());
+    ImGui::Separator();
+    ImGui::TextColored(g_pal.dim, "Perangkat aktif");
+    ImGui::TextUnformatted("Pencarian perangkat Android (mDNS), pairing PIN, dan kirim menyusul di Part 3.");
+    ImGui::Separator();
+    ImGui::Text("Daftar kirim: %d item (tarik-lepas file ke jendela ini)", (int)U.sendList.size());
+    for (auto& it : U.sendList) ImGui::BulletText("%s", it.path.c_str());
+}
+
+void drawFtp() {
+    ImGui::TextUnformatted("FTP dua panel: panel kiri PC ini, panel kanan perangkat Android yang sudah dipairing.");
+    ImGui::TextColored(g_pal.dim, "Menyusul di Part 3.");
+}
+
+// ------------------------------------------------------------------ tab Pengaturan
+void drawSettings() {
+    static char devBuf[64];
+    static bool devInit = false;
+    if (!devInit) { setBuf(devBuf, sizeof devBuf, U.devName); devInit = true; }
+
+    ImGui::TextColored(g_pal.dim, "Tampilan");
+    const char* themes[] = {"Ikuti sistem", "Terang", "Gelap"};
+    ImGui::SetNextItemWidth(220.f * g_scale);
+    if (ImGui::Combo("Tema", &U.theme, themes, 3)) { refreshTheme(); saveSettings(); }
+    if (ImGui::Checkbox("Tampilkan file tersembunyi", &U.showHidden)) { U.fm.dirty = true; saveSettings(); }
+    if (ImGui::Checkbox("Hapus ke Tempat Sampah", &U.useTrash)) saveSettings();
+
+    ImGui::Separator();
+    ImGui::TextColored(g_pal.dim, "Perangkat");
+    ImGui::SetNextItemWidth(260.f * g_scale);
+    if (ImGui::InputText("Nama perangkat", devBuf, sizeof devBuf)) {
+        std::string n = trim(devBuf);
+        if (!n.empty()) U.devName = n;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
+    if (ImGui::Checkbox("Izinkan jelajah FTP dari perangkat lain", &U.allowBrowse)) saveSettings();
+
+    ImGui::Separator();
+    ImGui::TextColored(g_pal.dim, "Pembaruan");
+    ImGui::Text("Versi saat ini: %s", kVersion);
+    if (ImGui::Checkbox("Cek otomatis saat dibuka", &U.autoUpdate)) saveSettings();
+    if (ImGui::Checkbox("Sertakan pra-rilis (alpha/beta/rc)", &U.preRelease)) saveSettings();
+    if (ImGui::Button("Cek sekarang")) startCheck(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Halaman rilis")) plat::openUrl(kReleasesPage);
+
+    ImGui::Separator();
+    ImGui::TextColored(g_pal.dim, "Riwayat perubahan");
+    ImGui::BeginChild("##changelog", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    for (const char* line : kChangelog) {
+        if (line[0] == '\0') ImGui::Spacing();
+        else ImGui::TextWrapped("%s", line);
+    }
+    ImGui::EndChild();
+}
+
+// ------------------------------------------------------------------ tab Log
+void drawLog() {
+    std::vector<std::string> copy;
+    bool dirty;
+    {
+        std::lock_guard<std::mutex> l(Sh.mu);
+        copy = Sh.logs;
+        dirty = Sh.logDirty;
+        Sh.logDirty = false;
+    }
+    ImGui::BeginChild("##log", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    if (g_mono) ImGui::PushFont(g_mono);
+    for (auto& l : copy) {
+        const std::string body = l.size() > 11 ? l.substr(11) : l;
+        ImVec4 c = g_pal.dim;
+        if (body.rfind("ERR", 0) == 0 || body.rfind("GAGAL", 0) == 0) c = g_pal.err;
+        else if (body.rfind("OK", 0) == 0) c = g_pal.ok;
+        ImGui::TextColored(c, "%s", l.c_str());
+    }
+    if (g_mono) ImGui::PopFont();
+    if (dirty) ImGui::SetScrollHereY(1.0f);
+    ImGui::EndChild();
+}
+
+}  // namespace
+
+// ------------------------------------------------------------------ titik masuk (dipanggil main_win.cpp)
+void init(float dpiScale) {
+    g_scale = dpiScale > 0.5f ? dpiScale : 1.f;
+    loadSettings();
+    if (U.devName.empty()) U.devName = plat::deviceName();
+    if (U.recvDir.empty()) U.recvDir = plat::knownFolder("documents") + "\\Ngirim\\Terima";
+    setupStyle(g_scale);
+    loadFonts(g_scale);
+    refreshTheme();
+    g_upd = std::make_unique<ng::Updater>(kVersion, plat::makeUpdaterIO());
+    addLog(std::string("Ngirim PC v") + kVersion + " dimulai");
+}
+
+void frame() {
+    // ikuti tema sistem bila dipilih
+    static double lastThemePoll = 0;
+    const double now = ImGui::GetTime();
+    if (U.theme == 0 && now - lastThemePoll > 2.0) {
+        lastThemePoll = now;
+        if (plat::systemPrefersDark() != U.dark) refreshTheme();
+    }
+    if (!g_autoChecked && now > 1.5) {
+        g_autoChecked = true;
+        if (U.autoUpdate) startCheck(false);
+    }
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::Begin("##root", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+    if (g_font) ImGui::PushFont(g_font);
+
+    drawUpdateBanner();
+    if (ImGui::BeginTabBar("##tabs")) {
+        if (ImGui::BeginTabItem("Lokal")) { drawLocal(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Wi-Fi")) { drawWifi(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("FTP")) { drawFtp(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Pengaturan")) { drawSettings(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Log")) { drawLog(); ImGui::EndTabItem(); }
+        ImGui::EndTabBar();
+    }
+
+    if (g_font) ImGui::PopFont();
+    ImGui::End();
+}
+
+void shutdown() {
+    saveSettings();
+    // Thread cek-update bisa masih menunggu jaringan; proses langsung keluar setelah ini, jadi tidak di-join.
+    if (g_upd) { g_upd->cancel(); (void)g_upd.release(); }
+}
+
+void onDrop(const std::vector<std::string>& paths) {
+    for (auto& p : paths) {
+        std::error_code ec;
+        SendItem it;
+        it.path = p;
+        it.dir = fs::is_directory(ng::P(p), ec);
+        U.sendList.push_back(it);
+    }
+    addLog("OK     " + std::to_string(paths.size()) + " item ditambahkan ke daftar kirim");
+}
+
+}  // namespace app
