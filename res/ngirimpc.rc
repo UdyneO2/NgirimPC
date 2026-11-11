@@ -1,0 +1,33 @@
+#include "ngirimpc_version.h"
+#include <winres.h>
+
+1 ICON "app.ico"
+1 24 "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION NGIRIMPC_VER_COMMA
+ PRODUCTVERSION NGIRIMPC_VER_COMMA
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "UdyneO2"
+            VALUE "FileDescription", "Ngirim PC - transfer file lewat Wi-Fi"
+            VALUE "FileVersion", NGIRIMPC_VERSION
+            VALUE "InternalName", "NgirimPC"
+            VALUE "OriginalFilename", "NgirimPC.exe"
+            VALUE "ProductName", "Ngirim PC"
+            VALUE "ProductVersion", NGIRIMPC_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

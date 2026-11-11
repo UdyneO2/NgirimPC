@@ -1,0 +1,10 @@
+build/
+build_*/
+out/
+.vs/
+*.user
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.sha256

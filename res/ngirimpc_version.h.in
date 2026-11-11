@@ -1,0 +1,4 @@
+#pragma once
+// Dibuat oleh CMake dari -DNGIRIMPC_VERSION; dipakai file resource (.rc).
+#define NGIRIMPC_VERSION "@NGIRIMPC_VERSION@"
+#define NGIRIMPC_VER_COMMA @NGIRIMPC_VER_COMMA@

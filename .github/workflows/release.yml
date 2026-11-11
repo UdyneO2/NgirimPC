@@ -1,42 +1,64 @@
-name: Build C++ ImGui UI
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tag versi rilis (contoh: v2.0.0)'
+        required: true
+        default: 'v2.0.0'
+
+permissions:
+  contents: write
 
 jobs:
-  build-windows:
+  windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Build C++ Native Lib
-        run: |
-          mkdir -p src/main/cpp/build
-          cd src/main/cpp/build
-          cmake ..
-          cmake --build . --config Release
+      - name: Tentukan versi
+        id: ver
         shell: bash
-
-      - name: Copy Native Lib to Resources
         run: |
-          mkdir -p src/main/resources
-          cp src/main/cpp/build/Release/*native-lib*.dll src/main/resources/ || true
+          TAG="${{ github.event.inputs.version || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if echo "$TAG" | grep -qiE 'alpha|beta|rc'; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DNGIRIMPC_VERSION=${{ steps.ver.outputs.name }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Tes
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+      - name: Siapkan aset (exe + SHA-256)
+        id: asset
+        shell: pwsh
+        run: |
+          Copy-Item build/Release/NgirimPC.exe NgirimPC.exe
+          $h = (Get-FileHash NgirimPC.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  NgirimPC.exe" | Out-File -FilePath NgirimPC.exe.sha256 -Encoding ascii
+          Write-Host "SHA-256: $h"
+
+      - name: Catatan rilis dari CHANGELOG
         shell: bash
+        run: |
+          awk -v t="${{ steps.ver.outputs.tag }}" '/^## /{f=(index($0,"## " t " ")>0 || $0=="## " t)} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || cp CHANGELOG.md notes.md
 
-      - name: Build Desktop Distribution
-        run: gradle packageReleaseDistributionForCurrentOS
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: windows-build
-          path: build/compose/binaries/main/app/
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: NgirimPC ${{ steps.ver.outputs.tag }}
+          body_path: notes.md
+          prerelease: ${{ steps.ver.outputs.pre == 'true' }}
+          files: |
+            NgirimPC.exe
+            NgirimPC.exe.sha256
