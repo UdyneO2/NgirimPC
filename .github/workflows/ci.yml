@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (inti + tes, tanpa UI)
+        shell: bash
+        run: cmake -S . -B build -A x64 -DNGIRIMPC_BUILD_APP=OFF
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Tes
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300

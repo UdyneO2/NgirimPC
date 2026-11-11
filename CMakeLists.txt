@@ -49,7 +49,8 @@ target_link_libraries(ng_proto_test PRIVATE ng_core)
 add_test(NAME protocol COMMAND ng_proto_test)
 
 # ---------------------------------------------------------------- aplikasi Windows
-if(WIN32)
+option(NGIRIMPC_BUILD_APP "Bangun NgirimPC.exe (butuh UI lengkap)" ON)
+if(WIN32 AND NGIRIMPC_BUILD_APP)
   include(FetchContent)
   FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
