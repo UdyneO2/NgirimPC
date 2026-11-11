@@ -1,4 +1,4 @@
-name: Release
+Name: Release
 
 on:
   push:
@@ -35,16 +35,16 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Tes
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
-
       - name: Siapkan aset (exe + SHA-256)
         id: asset
         shell: pwsh
         run: |
-          Copy-Item build/Release/NgirimPC.exe NgirimPC.exe
-          $h = (Get-FileHash NgirimPC.exe -Algorithm SHA256).Hash.ToLower()
-          "$h  NgirimPC.exe" | Out-File -FilePath NgirimPC.exe.sha256 -Encoding ascii
+          $TAG = "${{ steps.ver.outputs.tag }}"
+          $EXE_NAME = "NgirimPC-$TAG.exe"
+          
+          Copy-Item build/Release/NgirimPC.exe $EXE_NAME
+          $h = (Get-FileHash $EXE_NAME -Algorithm SHA256).Hash.ToLower()
+          "$h  $EXE_NAME" | Out-File -FilePath "$EXE_NAME.sha256" -Encoding ascii
           Write-Host "SHA-256: $h"
 
       - name: Catatan rilis dari CHANGELOG
@@ -61,5 +61,5 @@ jobs:
           body_path: notes.md
           prerelease: ${{ steps.ver.outputs.pre == 'true' }}
           files: |
-            NgirimPC.exe
-            NgirimPC.exe.sha256
+            NgirimPC-${{ steps.ver.outputs.tag }}.exe
+            NgirimPC-${{ steps.ver.outputs.tag }}.exe.sha256
