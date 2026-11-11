@@ -14,6 +14,12 @@
 #include "../src/core/mdns.h"
 #include "../src/core/updater_core.h"
 
+
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
 using namespace ng;
 
 static int g_fail = 0;

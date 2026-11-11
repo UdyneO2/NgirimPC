@@ -1,13 +1,10 @@
 #include "mdns.h"
-
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 
 #ifndef _WIN32
-#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#endif
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
