@@ -37,6 +37,11 @@ struct Cancelled : std::runtime_error {
     Cancelled() : std::runtime_error("dibatalkan") {}
 };
 
+/** Penolakan dari lawan bicara (PIN salah, sibuk, path ditolak): bukan gangguan jaringan. */
+struct Rejected : NetError {
+    using NetError::NetError;
+};
+
 /** Penghitung progres + kecepatan (rata-rata bergerak), dibatasi ~6 pembaruan/detik. */
 class Job {
 public:
@@ -44,6 +49,8 @@ public:
     int64_t done = 0;
     std::vector<char> buf;
     void emit(const std::string& cur, bool force = false);
+    /** Byte yang sudah ada di penerima (lanjutan): hitung sebagai selesai tanpa memengaruhi kecepatan. */
+    void skip(int64_t n) { done += n; lastDone_ = done; }
 
 private:
     const Callbacks& cb_;
@@ -53,6 +60,11 @@ private:
 };
 
 fs::path uniqueFile(const fs::path& f);
+
+/** Waktu ubah file dalam milidetik sejak epoch Unix (sama dengan File.lastModified() di Android). */
+int64_t fileMtimeMs(const fs::path& f);
+/** Nama file sementara penerima untuk transfer yang bisa dilanjutkan: <nama>.<ukuran>-<mtime>.ngpart */
+fs::path partFilePath(const fs::path& target, int64_t size, int64_t mtimeMs);
 std::string randomPin();  // 6 digit
 
 class Engine {
@@ -83,8 +95,8 @@ public:
     bool busy() const { return running_.load(); }
 
 private:
-    struct Ent { std::string rel; bool dir; int64_t size; };
-    struct SendEnt { std::string rel; fs::path f; bool dir; int64_t size; };
+    struct Ent { std::string rel; bool dir; int64_t size; int64_t mtime; };
+    struct SendEnt { std::string rel; fs::path f; bool dir; int64_t size; int64_t mtime; };
     struct Outcome { bool ok; std::string msg; int64_t done; int64_t total; };
 
     Callbacks cb_;
@@ -115,6 +127,7 @@ private:
     std::string handshake(Conn& c, int mode, const std::string& pin, const std::string& name);
     fs::path resolveRemote(const std::string& p);
     void startClient(std::function<Outcome()> block);
+    Outcome withResume(const std::function<Outcome()>& session);
     void clientJob(const std::string& host, int port, int mode, const std::string& pin, const std::string& name,
                    const std::function<void(Conn&, const std::string&)>& body);
 };

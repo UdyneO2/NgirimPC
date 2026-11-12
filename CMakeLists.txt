@@ -31,7 +31,7 @@ configure_file(res/ngirimpc_version.h.in ${CMAKE_BINARY_DIR}/gen/ngirimpc_versio
 # ---------------------------------------------------------------- inti portabel + tes (semua OS)
 add_library(ng_core STATIC
   src/core/localops.cpp src/core/mdns.cpp src/core/netio.cpp src/core/proto.cpp
-  src/core/updater_core.cpp src/core/updater.cpp)
+  src/core/updater_core.cpp src/core/updater.cpp src/core/qr.cpp)
 target_include_directories(ng_core PUBLIC src/core)
 find_package(Threads REQUIRED)
 target_link_libraries(ng_core PUBLIC Threads::Threads)
@@ -46,6 +46,9 @@ if(NGIRIMPC_BUILD_TESTS)
   add_executable(ng_updater_test tests/updater_test.cpp)
   target_link_libraries(ng_updater_test PRIVATE ng_core)
   add_test(NAME updater COMMAND ng_updater_test)
+  add_executable(ng_qr_test tests/qr_test.cpp)
+  target_link_libraries(ng_qr_test PRIVATE ng_core)
+  add_test(NAME qr COMMAND ng_qr_test)
   add_executable(ng_proto_test tests/proto_test.cpp)
   target_link_libraries(ng_proto_test PRIVATE ng_core)
   add_test(NAME protocol COMMAND ng_proto_test)
@@ -62,7 +65,7 @@ if(WIN32 AND NGIRIMPC_BUILD_APP)
   FetchContent_MakeAvailable(imgui)
 
   add_executable(NgirimPC WIN32
-    src/win/main_win.cpp src/win/plat_win.cpp src/app/app.cpp
+    src/win/main_win.cpp src/win/plat_win.cpp src/app/app.cpp src/app/i18n.cpp
     res/ngirimpc.rc
     ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp

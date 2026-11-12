@@ -1,4 +1,4 @@
-// Rekan referensi Ngirim v2 memakai java.io.Data*Stream asli (sama dengan aplikasi Android).
+// Rekan referensi Ngirim (protokol v3, Ngirim Android v2.5+) memakai java.io.Data*Stream asli (sama dengan aplikasi Android).
 // Dipakai hanya untuk uji interop; logika dipindahkan dari FileService.kt.
 import java.io.*;
 import java.net.*;
@@ -18,29 +18,34 @@ public class RefPeer {
         return m.doFinal();
     }
 
-    record Ent(String rel, File f, boolean dir, long size) {}
+    record Ent(String rel, File f, boolean dir, long size, long mtime) {}
 
     static void walk(String rel, File f, List<Ent> out) {
         if (f.isDirectory()) {
-            out.add(new Ent(rel, f, true, 0));
+            out.add(new Ent(rel, f, true, 0, 0));
             File[] k = f.listFiles();
             Arrays.sort(k, Comparator.comparing(File::getName));
             for (File c : k) walk(rel + "/" + c.getName(), c, out);
-        } else out.add(new Ent(rel, f, false, f.length()));
+        } else out.add(new Ent(rel, f, false, f.length(), f.lastModified()));
     }
 
     static void sendSession(DataInputStream in, DataOutputStream out, List<Ent> list) throws Exception {
         long total = 0; for (Ent e : list) total += e.size;
         out.writeInt(list.size()); out.writeLong(total);
-        for (Ent e : list) { out.writeUTF(e.rel); out.writeByte(e.dir ? 1 : 0); out.writeLong(e.size); }
+        for (Ent e : list) { out.writeUTF(e.rel); out.writeByte(e.dir ? 1 : 0); out.writeLong(e.size); out.writeLong(e.mtime); }
         out.flush();
         if (in.readByte() != 1) throw new IOException("Ditolak: " + in.readUTF());
         in.readUTF();
+        long[] offsets = new long[list.size()];
+        for (int i = 0; i < offsets.length; i++) offsets[i] = in.readLong();
         byte[] buf = new byte[1 << 16];
-        for (Ent e : list) {
+        for (int idx = 0; idx < list.size(); idx++) {
+            Ent e = list.get(idx);
             if (e.dir) continue;
             try (FileInputStream fi = new FileInputStream(e.f)) {
-                long left = e.size;
+                if (offsets[idx] > 0) fi.getChannel().position(offsets[idx]);
+                System.out.println("SENDOFF " + e.rel + " " + offsets[idx]);
+                long left = e.size - offsets[idx];
                 while (left > 0) {
                     int n = fi.read(buf, 0, (int) Math.min(left, buf.length));
                     out.write(buf, 0, n); left -= n;
@@ -51,25 +56,42 @@ public class RefPeer {
         if (in.readByte() != 1) throw new IOException("Penerima gagal");
     }
 
+    static File partFile(File t, long size, long mtime) {
+        return new File(t.getParentFile(), t.getName() + "." + size + "-" + mtime + ".ngpart");
+    }
+
     static void recvSession(DataInputStream in, DataOutputStream out, File root) throws Exception {
         int count = in.readInt(); long total = in.readLong();
         List<Ent> list = new ArrayList<>();
-        for (int i = 0; i < count; i++) list.add(new Ent(in.readUTF(), null, in.readByte() == 1, in.readLong()));
-        out.writeByte(1); out.writeUTF("SIAP"); out.flush();
+        for (int i = 0; i < count; i++) list.add(new Ent(in.readUTF(), null, in.readByte() == 1, in.readLong(), in.readLong()));
+        long[] offsets = new long[list.size()];
+        for (int i = 0; i < offsets.length; i++) {
+            Ent e = list.get(i);
+            if (e.dir) continue;
+            File p = partFile(new File(root, e.rel), e.size, e.mtime);
+            if (p.isFile()) { long len = p.length(); if (len >= 1 && len <= e.size) offsets[i] = len; else p.delete(); }
+        }
+        out.writeByte(1); out.writeUTF("SIAP");
+        for (long o : offsets) out.writeLong(o);
+        out.flush();
         byte[] buf = new byte[1 << 16];
-        for (Ent e : list) {
+        for (int idx = 0; idx < list.size(); idx++) {
+            Ent e = list.get(idx);
             File t = new File(root, e.rel);
             if (e.dir) { t.mkdirs(); continue; }
             t.getParentFile().mkdirs();
-            try (FileOutputStream fo = new FileOutputStream(t)) {
-                long left = e.size;
+            File part = partFile(t, e.size, e.mtime);
+            try (FileOutputStream fo = new FileOutputStream(part, offsets[idx] > 0)) {
+                long left = e.size - offsets[idx];
                 while (left > 0) {
                     int n = in.read(buf, 0, (int) Math.min(left, buf.length));
                     if (n < 0) throw new EOFException();
                     fo.write(buf, 0, n); left -= n;
                 }
             }
-            System.out.println("RECV " + e.rel + " " + e.size);
+            if (!part.renameTo(t)) throw new IOException("rename");
+            if (e.mtime > 0) t.setLastModified(e.mtime);
+            System.out.println("RECV " + e.rel + " " + e.size + " mtime=" + t.lastModified() + " resumed=" + offsets[idx]);
         }
         out.writeByte(1); out.flush();
     }
@@ -80,7 +102,7 @@ public class RefPeer {
         DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
         DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
         if (in.readInt() != MAGIC) throw new IOException("magic");
-        if (in.readByte() != 2) throw new IOException("versi");
+        if (in.readByte() != 3) throw new IOException("versi");
         byte[] nonce = new byte[16]; in.readFully(nonce);
         String server = in.readUTF();
         out.writeByte(mode); out.writeUTF(NAME); out.write(hmac(pin, nonce, mode, NAME)); out.flush();
@@ -101,7 +123,7 @@ public class RefPeer {
                 DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
                 DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
                 byte[] nonce = new byte[16]; new Random().nextBytes(nonce);
-                out.writeInt(MAGIC); out.writeByte(2); out.write(nonce); out.writeUTF(NAME); out.flush();
+                out.writeInt(MAGIC); out.writeByte(3); out.write(nonce); out.writeUTF(NAME); out.flush();
                 int mode = in.readByte(); String peer = in.readUTF(); byte[] mac = new byte[32]; in.readFully(mac);
                 System.out.println("PEER " + peer + " mode=" + mode);
                 if (!MessageDigest.isEqual(mac, hmac(pin, nonce, mode, peer))) {
@@ -132,7 +154,7 @@ public class RefPeer {
             case "evil": {                    // path traversal harus ditolak
                 Object[] c = connect(host, port, pin, 2); if (c == null) break;
                 DataInputStream in = (DataInputStream) c[1]; DataOutputStream out = (DataOutputStream) c[2];
-                out.writeInt(1); out.writeLong(4); out.writeUTF("../evil.txt"); out.writeByte(0); out.writeLong(4); out.flush();
+                out.writeInt(1); out.writeLong(4); out.writeUTF("../evil.txt"); out.writeByte(0); out.writeLong(4); out.writeLong(0); out.flush();
                 int ok = in.readByte(); String m = in.readUTF();
                 System.out.println("EVIL ok=" + ok + " msg=" + m);
                 break;

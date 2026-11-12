@@ -104,7 +104,7 @@ sock_t netConnect(const std::string& host, int port, int timeoutMs) {
 #else
         bool pending = (e == EINPROGRESS);
 #endif
-        if (!pending) { sockClose(s); throw NetError("Tidak bisa terhubung ke " + host); }
+        if (!pending) { sockClose(s); throw NetDropped("Tidak bisa terhubung ke " + host); }
         fd_set wf, ef;
         FD_ZERO(&wf); FD_ZERO(&ef);
         FD_SET(s, &wf); FD_SET(s, &ef);
@@ -112,11 +112,11 @@ sock_t netConnect(const std::string& host, int port, int timeoutMs) {
         tv.tv_sec = timeoutMs / 1000;
         tv.tv_usec = (timeoutMs % 1000) * 1000;
         int n = select((int)s + 1, nullptr, &wf, &ef, &tv);
-        if (n <= 0) { sockClose(s); throw NetError("Waktu habis saat menghubungi " + host); }
+        if (n <= 0) { sockClose(s); throw NetDropped("Waktu habis saat menghubungi " + host); }
         int err = 0;
         socklen_t len = sizeof err;
         getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
-        if (err != 0 || FD_ISSET(s, &ef)) { sockClose(s); throw NetError("Koneksi ditolak oleh " + host); }
+        if (err != 0 || FD_ISSET(s, &ef)) { sockClose(s); throw NetDropped("Koneksi ditolak oleh " + host); }
     }
     setBlocking(s, true);
     int one = 1;
@@ -295,8 +295,8 @@ void Conn::sendAll(const uint8_t* p, size_t n) {
         ssize_t r = ::send(s_, p, n, MSG_NOSIGNAL);
 #endif
         if (r <= 0) {
-            if (r < 0 && isTimeout(lastErr())) throw NetError("Waktu habis saat mengirim");
-            throw NetError("Koneksi terputus");
+            if (r < 0 && isTimeout(lastErr())) throw NetDropped("Waktu habis saat mengirim");
+            throw NetDropped("Koneksi terputus");
         }
         p += r;
         n -= (size_t)r;
@@ -356,8 +356,8 @@ size_t Conn::readSome(void* p, size_t n) {
 #else
     ssize_t r = ::recv(s_, target, cap, 0);
 #endif
-    if (r < 0 && isTimeout(lastErr())) throw NetError("Waktu habis menunggu data");
-    if (r <= 0) throw NetError("Koneksi terputus");
+    if (r < 0 && isTimeout(lastErr())) throw NetDropped("Waktu habis menunggu data");
+    if (r <= 0) throw NetDropped("Koneksi terputus");
     if (target == dst) return (size_t)r;
     inPos_ = 0;
     inLen_ = (size_t)r;

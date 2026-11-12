@@ -184,6 +184,48 @@ int main(int argc, char** argv) {
     CHECK(ss.wait()); CHECK(ss.ok);
     CHECK(fs::exists(recv / P("\xC3\xBCn\xC3\xAF \xE4\xB8\xAD (1).txt")));
 
+    std::puts("[3b] lanjutan transfer (.ngpart) + waktu ubah dibawa ke penerima");
+    {
+        auto logged = [&](Sink& k, const char* t) {
+            std::lock_guard<std::mutex> lk(k.m);
+            for (auto& x : k.logs) if (has(x, t)) return true;
+            return false;
+        };
+        fs::path rsrc = T / "rsrc" / "big.bin";
+        writeFile(rsrc, 2 * 1024 * 1024 + 5, 9);
+        const int64_t size = (int64_t)fs::file_size(rsrc), ms = fileMtimeMs(rsrc);
+        const fs::path target = recv / "big.bin", part = partFilePath(target, size, ms);
+        fs::create_directories(recv);
+        {   // sisa transfer: 1 MiB pertama sudah diterima
+            std::ifstream i(rsrc, std::ios::binary);
+            std::vector<char> b(1 << 20);
+            i.read(b.data(), (std::streamsize)b.size());
+            std::ofstream o(part, std::ios::binary);
+            o.write(b.data(), (std::streamsize)b.size());
+        }
+        ss.reset();
+        S.send("127.0.0.1", port, "123456", "Snd", {rsrc});
+        CHECK(ss.wait()); CHECK(ss.ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(sameTree(rsrc, target));                 // isi utuh setelah disambung
+        CHECK(!fs::exists(part));                      // file sementara dibersihkan
+        CHECK(logged(ss, "Melanjutkan"));              // pengirim tahu hanya sisanya yang dikirim
+        CHECK(std::llabs(fileMtimeMs(target) - ms) <= 1);  // waktu ubah ikut
+
+        // sisa yang tidak cocok (lebih besar dari file) dibuang, transfer penuh
+        fs::path rsrc2 = T / "rsrc" / "big2.bin";
+        writeFile(rsrc2, 1000, 5);
+        const int64_t ms2 = fileMtimeMs(rsrc2);
+        const fs::path part2 = partFilePath(recv / "big2.bin", 1000, ms2);
+        writeFile(part2, 5000, 6);
+        ss.reset();
+        S.send("127.0.0.1", port, "123456", "Snd", {rsrc2});
+        CHECK(ss.wait()); CHECK(ss.ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(sameTree(rsrc2, recv / "big2.bin") && !fs::exists(part2));
+        CHECK(!logged(ss, "Melanjutkan: 5"));
+    }
+
     std::string err;
     S.remoteList("127.0.0.1", port, "123456", "Snd", "/sdcard", err);
     CHECK(has(err, "dimatikan"));

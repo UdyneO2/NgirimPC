@@ -23,6 +23,10 @@ std::string deviceName();                                // nama komputer
 std::string dataDir();                                   // %APPDATA%\NgirimPC (dibuat bila belum ada)
 bool fileExists(const std::string& path);
 bool systemPrefersDark();
+/** Kode bahasa sistem dua huruf (mis. "id", "en"); kosong bila tidak diketahui. */
+std::string systemLanguage();
+/** Data resource RCDATA yang tertanam di exe (font). Pointer berlaku selama proses hidup. */
+bool resourceData(int id, const void*& data, size_t& size);
 
 // ---- pembaruan
 bool httpGet(const std::string& url, std::string& body, std::string& err);

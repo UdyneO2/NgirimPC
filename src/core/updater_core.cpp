@@ -241,6 +241,7 @@ UpdateInfo pickRelease(const std::string& json, const std::string& current, bool
             for (auto& as : assets->a) {
                 std::string nm = lower(as.str("name"));
                 if (nm.rfind("ngirimpc", 0) != 0 || nm.size() < 12 || nm.compare(nm.size() - 4, 4, ".exe") != 0) continue;
+                if (nm.find("setup") != std::string::npos) continue;  // installer bukan aset update
                 if (!exe.empty()) break;  // ambil exe pertama saja
                 exeName = nm;
                 exe = as.str("browser_download_url");

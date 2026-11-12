@@ -237,6 +237,25 @@ std::string dataDir() {
 
 bool fileExists(const std::string& path) { return GetFileAttributesW(W(path).c_str()) != INVALID_FILE_ATTRIBUTES; }
 
+bool resourceData(int id, const void*& data, size_t& size) {
+    HRSRC r = FindResourceW(nullptr, MAKEINTRESOURCEW(id), RT_RCDATA);
+    if (!r) return false;
+    HGLOBAL h = LoadResource(nullptr, r);
+    if (!h) return false;
+    data = LockResource(h);
+    size = SizeofResource(nullptr, r);
+    return data != nullptr && size > 0;
+}
+
+std::string systemLanguage() {
+    wchar_t buf[LOCALE_NAME_MAX_LENGTH] = {};
+    if (GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH) <= 0) return "";
+    std::string out;
+    for (const wchar_t* c = buf; *c && *c != L'-' && *c != L'_'; c++) out += (char)(*c < 128 ? *c : '?');
+    for (auto& ch : out) ch = (char)std::tolower((unsigned char)ch);
+    return out;
+}
+
 bool systemPrefersDark() {
     DWORD v = 1, sz = sizeof v;
     LSTATUS r = RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",

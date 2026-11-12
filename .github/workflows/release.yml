@@ -54,6 +54,23 @@ jobs:
           "$h  $env:EXE" | Out-File -FilePath "$env:EXE.sha256" -Encoding ascii
           Write-Host "SHA-256: $h"
 
+      - name: Bangun installer (Inno Setup)
+        shell: pwsh
+        env:
+          EXE: ${{ steps.ver.outputs.exe }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VER: ${{ steps.ver.outputs.name }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup tidak ditemukan" }
+          & $iscc "/DMyVersion=$env:VER" "/DMyExe=$env:EXE" "/DMyOut=NgirimPC-Setup-$env:TAG" installer\NgirimPC.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
+          $setup = "NgirimPC-Setup-$env:TAG.exe"
+          Move-Item "dist\$setup" $setup
+          $h = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          "$h  $setup" | Out-File -FilePath "$setup.sha256" -Encoding ascii
+
       - name: Catatan rilis dari CHANGELOG
         shell: bash
         run: |
@@ -71,3 +88,5 @@ jobs:
           files: |
             ${{ steps.ver.outputs.exe }}
             ${{ steps.ver.outputs.exe }}.sha256
+            NgirimPC-Setup-${{ steps.ver.outputs.tag }}.exe
+            NgirimPC-Setup-${{ steps.ver.outputs.tag }}.exe.sha256

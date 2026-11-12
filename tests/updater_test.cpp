@@ -90,6 +90,15 @@ int main() {
         f.releasesJson = rel("v2.1.0", false, "", true, exe.size(), "NgirimPC-v2.1.0.exe");
         CHECK(run(f, tmp, "2.0.0", false, true).state == UpdState::Ready);
     }
+    { // aset installer (NgirimPC-Setup-*.exe) tidak boleh dipilih sebagai update
+        Fake f; f.exeBytes = exe;
+        std::string j = rel("v2.1.0", false, ",\"digest\":\"sha256:" + good + "\"", false, exe.size(), "NgirimPC-v2.1.0.exe");
+        std::string setup = "{\"name\":\"NgirimPC-Setup-v2.1.0.exe\",\"browser_download_url\":\"https://x/setup.exe\",\"size\":9}";
+        j.insert(j.find("\"assets\":[") + 10, setup + ",");   // installer di urutan pertama
+        f.releasesJson = j;
+        UpdSnapshot s = run(f, tmp, "2.0.0", false, true);
+        CHECK(s.state == UpdState::Ready && s.info.exeUrl.find("setup") == std::string::npos);
+    }
     { // checksum salah -> gagal, file dihapus, tidak dipasang
         Fake f; f.exeBytes = exe;
         f.releasesJson = rel("v2.1.0", false, ",\"digest\":\"sha256:" + std::string(64, 'a') + "\"", false, exe.size());

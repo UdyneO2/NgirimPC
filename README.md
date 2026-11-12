@@ -1,11 +1,12 @@
 # NgirimPC
 
 Versi Windows 10/11 dari Ngirim: kirim file, folder, APK, dan data game antar PC dan Android lewat Wi-Fi/LAN.
-Kompatibel dengan Ngirim Android v2.0. Satu file `NgirimPC.exe`, tanpa instalasi.
+Kompatibel dengan Ngirim Android v2.5 ke atas (protokol v3). Transfer yang putus bisa dilanjutkan dengan mengirim ulang file yang sama. Satu file `NgirimPC.exe`, tanpa instalasi.
 
 ## Memakai
-1. Unduh `NgirimPC-vX.Y.Z.exe` (mis. `NgirimPC-v2.0.0.exe`) dari [Releases](https://github.com/UdyneO2/NgirimPC/releases/) dan taruh di folder yang bisa ditulis (Desktop atau Documents, bukan Program Files), supaya update otomatis bisa mengganti file.
+1. Pilih salah satu: **installer** `NgirimPC-Setup-vX.Y.Z.exe` (per-pengguna, tanpa admin), atau exe portabel `NgirimPC-vX.Y.Z.exe`. Unduh (mis. `NgirimPC-v2.0.0.exe`) dari [Releases](https://github.com/UdyneO2/NgirimPC/releases/) dan taruh di folder yang bisa ditulis (Desktop atau Documents, bukan Program Files), supaya update otomatis bisa mengganti file.
 2. **Terima di PC:** tab Wi-Fi, aktifkan penerimaan, lalu masukkan alamat dan PIN yang tampil di Ngirim Android.
+   Atau tekan **Tampilkan QR** dan pindai dengan Ngirim Android (pairing otomatis tanpa mengetik PIN). QR berisi PIN, tunjukkan hanya ke orang yang dipercaya.
 3. **Kirim dari PC:** tab Wi-Fi, pilih perangkat Android yang terdeteksi (atau isi IP:port), isi PIN dari HP, tekan Pairing, tambahkan file (atau tarik-lepas), tekan Kirim.
 4. **Jelajah folder HP:** setelah pairing, tab FTP menampilkan PC di kiri dan Android di kanan.
 
@@ -26,3 +27,4 @@ Rilis: push tag `vX.Y.Z` (contoh `v2.0.0`); GitHub Actions membangun dan menerbi
 
 ## Lisensi
 MIT, lihat `LICENSE`. Antarmuka memakai [Dear ImGui](https://github.com/ocornut/imgui) (MIT, Omar Cornut dan kontributor).
+Font Source Sans 3 (SIL Open Font License 1.1), lihat `res/fonts/LICENSE-SourceSans3.txt`.

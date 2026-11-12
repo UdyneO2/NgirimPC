@@ -21,6 +21,11 @@ struct NetError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+/** Koneksi putus / waktu habis / gagal tersambung: boleh dicoba lanjut (resume). */
+struct NetDropped : NetError {
+    using NetError::NetError;
+};
+
 void netInit();                                   // WSAStartup (Windows), no-op di tempat lain
 void sockShutdown(sock_t s);                      // bangunkan thread yang sedang blok di soket ini
 void sockClose(sock_t s);

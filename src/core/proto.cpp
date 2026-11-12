@@ -14,7 +14,7 @@
 namespace ng {
 
 static const int32_t MAGIC = 0x4E475231;  // "NGR1"
-static const int VERSION = 2;
+static const int VERSION = 3;  // 3: manifest membawa waktu ubah + penerima mengirim offset lanjutan
 static const int MAX_PIN_FAILS = 5;
 
 struct SecurityError : std::runtime_error {
@@ -140,6 +140,63 @@ static fs::path safeResolve(const fs::path& root, const std::string& rel) {
 }
 
 // ------------------------------------------------------------------ Engine: dasar
+
+// ------------------------------------------------------------------ lanjutan transfer (.ngpart) dan waktu ubah
+// Selisih epoch jam file dan jam sistem diambil sekali, supaya konversi bolak-balik deterministik (tanpa jitter milidetik).
+#ifndef _WIN32
+static std::chrono::nanoseconds fileClockOffset() {
+    static const std::chrono::nanoseconds off = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch() - fs::file_time_type::clock::now().time_since_epoch());
+    return off;
+}
+#endif
+
+static int64_t toUnixMs(fs::file_time_type ft) {
+    using namespace std::chrono;
+#ifdef _WIN32
+    return duration_cast<milliseconds>(ft.time_since_epoch()).count() - 11644473600000LL;  // epoch 1601 -> 1970
+#else
+    return duration_cast<milliseconds>(duration_cast<nanoseconds>(ft.time_since_epoch()) + fileClockOffset()).count();
+#endif
+}
+
+static fs::file_time_type fromUnixMs(int64_t ms) {
+    using namespace std::chrono;
+#ifdef _WIN32
+    return fs::file_time_type(duration_cast<fs::file_time_type::duration>(milliseconds(ms + 11644473600000LL)));
+#else
+    return fs::file_time_type(duration_cast<fs::file_time_type::duration>(milliseconds(ms) - fileClockOffset()));
+#endif
+}
+
+/** File sementara penerima: nama + ukuran + waktu ubah sumber, jadi hanya cocok dengan file yang sama persis. */
+static fs::path partFile(const fs::path& target, int64_t size, int64_t mtime) {
+    return target.parent_path() /
+           fs::u8path(U(target.filename()) + "." + std::to_string(size) + "-" + std::to_string(mtime) + ".ngpart");
+}
+
+int64_t fileMtimeMs(const fs::path& f) {
+    std::error_code ec;
+    return toUnixMs(fs::last_write_time(f, ec));
+}
+
+fs::path partFilePath(const fs::path& target, int64_t size, int64_t mtimeMs) { return partFile(target, size, mtimeMs); }
+
+/** Hapus sisa transfer yang tak pernah dilanjutkan (> 7 hari). */
+static void cleanStaleParts(const fs::path& dir, int depth = 0) {
+    if (depth > 8) return;
+    std::error_code ec;
+    const auto cutoff = fs::file_time_type::clock::now() - std::chrono::hours(24 * 7);
+    for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_directory(e2)) { cleanStaleParts(it->path(), depth + 1); continue; }
+        const std::string nm = U(it->path().filename());
+        if (nm.size() <= 7 || nm.compare(nm.size() - 7, 7, ".ngpart") != 0) continue;
+        auto t = fs::last_write_time(it->path(), e2);
+        if (!e2 && t < cutoff) fs::remove(it->path(), e2);
+    }
+}
+
 Engine::Engine(Callbacks cb) : cb_(std::move(cb)) { netInit(); }
 
 Engine::~Engine() {
@@ -180,6 +237,7 @@ int Engine::listen(const fs::path& receiveDir, const std::string& pin, const std
         std::error_code ec;
         fs::create_directories(receiveDir, ec);
         if (!fs::is_directory(receiveDir, ec)) throw NetError("Folder tujuan tidak valid");
+        { const fs::path d = receiveDir; std::thread([d] { try { cleanStaleParts(d); } catch (...) {} }).detach(); }
         int port = 0;
         sock_t s = netListen(port);
         {
@@ -408,6 +466,7 @@ Engine::Outcome Engine::receiveSession(Conn& c, const fs::path& root, const std:
         e.rel = c.readUTF();
         e.dir = c.readByte() == 1;
         e.size = c.readLong();
+        e.mtime = c.readLong();
         list.push_back(std::move(e));
     }
     std::vector<fs::path> targets;
@@ -418,44 +477,58 @@ Engine::Outcome Engine::receiveSession(Conn& c, const fs::path& root, const std:
         return {false, std::string("Path ditolak: ") + e.what(), 0, total};
     }
     std::error_code ec;
+    // sisa transfer sebelumnya: berapa byte tiap file sudah ada
+    std::vector<int64_t> offsets(list.size(), 0);
+    int64_t resumed = 0;
+    for (size_t i = 0; i < list.size(); i++) {
+        if (list[i].dir) continue;
+        fs::path p = partFile(targets[i], list[i].size, list[i].mtime);
+        if (fs::is_regular_file(p, ec)) {
+            int64_t len = (int64_t)fs::file_size(p, ec);
+            if (!ec && len >= 1 && len <= list[i].size) { offsets[i] = len; resumed += len; }
+            else fs::remove(p, ec);
+        }
+    }
     auto sp = fs::space(root, ec);
-    if (!ec && (int64_t)sp.available < total) {
+    if (!ec && (int64_t)sp.available < total - resumed) {
         reply(c, false, "Ruang penyimpanan tidak cukup");
-        return {false, "Ruang tidak cukup (butuh " + fmtSize((double)total) + ")", 0, total};
+        return {false, "Ruang tidak cukup (butuh " + fmtSize((double)(total - resumed)) + ")", 0, total};
     }
     reply(c, true, "SIAP");
+    for (int64_t o : offsets) c.writeLong(o);
+    c.flush();
     log("Menerima " + std::to_string(list.size()) + " entri (" + fmtSize((double)total) + ")");
+    if (resumed > 0) log("Melanjutkan: " + fmtSize((double)resumed) + " sudah ada");
 
     Job job(cb_, total);
+    job.skip(resumed);
     int files = 0;
     for (size_t i = 0; i < list.size(); i++) {
         const Ent& e = list[i];
         const fs::path& target = targets[i];
         if (e.dir) { fs::create_directories(target, ec); continue; }
         fs::create_directories(target.parent_path(), ec);
-        fs::path dst = uniqueFile(target);
-        bool okFile = false;
-        try {
-            {
-                std::ofstream o(dst, std::ios::binary | std::ios::trunc);
-                if (!o) throw NetError("Tidak bisa membuat file: " + U(dst.filename()));
-                int64_t left = e.size;
-                while (left > 0) {
-                    size_t want = (size_t)std::min<int64_t>(left, (int64_t)job.buf.size());
-                    size_t n = c.readSome(job.buf.data(), want);
-                    o.write(job.buf.data(), (std::streamsize)n);
-                    if (!o) throw NetError("Gagal menulis ke disk (penuh?)");
-                    left -= (int64_t)n;
-                    job.done += (int64_t)n;
-                    job.emit(e.rel);
-                    if (cancelled_) throw Cancelled();
-                }
+        const fs::path part = partFile(target, e.size, e.mtime);
+        // Gangguan di tengah jalan meninggalkan .ngpart supaya bisa dilanjutkan; dihapus otomatis setelah 7 hari
+        {
+            std::ofstream o(part, std::ios::binary | (offsets[i] > 0 ? std::ios::app : std::ios::trunc));
+            if (!o) throw NetError("Tidak bisa membuat file: " + U(part.filename()));
+            int64_t left = e.size - offsets[i];
+            while (left > 0) {
+                size_t want = (size_t)std::min<int64_t>(left, (int64_t)job.buf.size());
+                size_t n = c.readSome(job.buf.data(), want);
+                o.write(job.buf.data(), (std::streamsize)n);
+                if (!o) throw NetError("Gagal menulis ke disk (penuh?)");
+                left -= (int64_t)n;
+                job.done += (int64_t)n;
+                job.emit(e.rel);
+                if (cancelled_) throw Cancelled();
             }
-            okFile = true;
-        } catch (...) {
-            if (!okFile) { std::error_code e3; fs::remove(dst, e3); }
-            throw;
         }
+        fs::path dst = uniqueFile(target);
+        fs::rename(part, dst, ec);
+        if (ec) throw NetError("Gagal menyimpan " + e.rel);
+        if (e.mtime > 0) fs::last_write_time(dst, fromUnixMs(e.mtime), ec);
         files++;
         log("OK     " + e.rel);
     }
@@ -466,34 +539,34 @@ Engine::Outcome Engine::receiveSession(Conn& c, const fs::path& root, const std:
             job.done, total};
 }
 
-static void walkManifest(const std::string& rel, const fs::path& f, std::vector<std::tuple<std::string, fs::path, bool, int64_t>>& out) {
+static void walkManifest(const std::string& rel, const fs::path& f, std::vector<std::tuple<std::string, fs::path, bool, int64_t, int64_t>>& out) {
     std::error_code ec;
     fs::file_status sst = fs::symlink_status(f, ec);
     if (ec) return;
     if (fs::is_symlink(sst)) {  // symlink ke file diikuti; ke folder dilewati (hindari siklus)
-        if (fs::is_regular_file(f, ec)) out.emplace_back(rel, f, false, (int64_t)fs::file_size(f, ec));
+        if (fs::is_regular_file(f, ec)) out.emplace_back(rel, f, false, (int64_t)fs::file_size(f, ec), toUnixMs(fs::last_write_time(f, ec)));
         return;
     }
     if (fs::is_directory(sst)) {
-        out.emplace_back(rel, f, true, 0);
+        out.emplace_back(rel, f, true, 0, 0);
         std::vector<fs::path> kids;
         for (fs::directory_iterator it(f, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
             kids.push_back(it->path());
         std::sort(kids.begin(), kids.end(), [](const fs::path& a, const fs::path& b) { return U(a.filename()) < U(b.filename()); });
         for (auto& k : kids) walkManifest(rel + "/" + U(k.filename()), k, out);
     } else if (fs::is_regular_file(sst)) {
-        out.emplace_back(rel, f, false, (int64_t)fs::file_size(f, ec));
+        out.emplace_back(rel, f, false, (int64_t)fs::file_size(f, ec), toUnixMs(fs::last_write_time(f, ec)));
     }
 }
 
 Engine::Outcome Engine::sendSession(Conn& c, const std::vector<fs::path>& srcs, const std::string& label) {
-    std::vector<std::tuple<std::string, fs::path, bool, int64_t>> raw;
+    std::vector<std::tuple<std::string, fs::path, bool, int64_t, int64_t>> raw;
     for (auto& s : srcs) walkManifest(U(s.filename()), s, raw);
     std::vector<SendEnt> list;
     int64_t total = 0;
     int fileCount = 0;
     for (auto& t : raw) {
-        list.push_back({std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t)});
+        list.push_back({std::get<0>(t), std::get<1>(t), std::get<2>(t), std::get<3>(t), std::get<4>(t)});
         total += std::get<3>(t);
         if (!std::get<2>(t)) fileCount++;
     }
@@ -502,17 +575,28 @@ Engine::Outcome Engine::sendSession(Conn& c, const std::vector<fs::path>& srcs, 
 
     c.writeInt((int32_t)list.size());
     c.writeLong(total);
-    for (auto& e : list) { c.writeUTF(e.rel); c.writeByte(e.dir ? 1 : 0); c.writeLong(e.size); }
+    for (auto& e : list) { c.writeUTF(e.rel); c.writeByte(e.dir ? 1 : 0); c.writeLong(e.size); c.writeLong(e.mtime); }
     c.flush();
-    if (c.readByte() != 1) throw NetError("Ditolak penerima: " + c.readUTF());
+    if (c.readByte() != 1) throw Rejected("Ditolak penerima: " + c.readUTF());
     c.readUTF();
+    std::vector<int64_t> offsets(list.size());
+    int64_t resumed = 0;
+    for (size_t i = 0; i < list.size(); i++) {
+        offsets[i] = c.readLong();
+        if (offsets[i] < 0 || offsets[i] > list[i].size) throw NetError("Offset lanjutan tidak valid");
+        resumed += offsets[i];
+    }
 
     Job job(cb_, total);
-    for (auto& e : list) {
+    job.skip(resumed);
+    if (resumed > 0) log("Melanjutkan: " + fmtSize((double)resumed) + " sudah diterima");
+    for (size_t idx = 0; idx < list.size(); idx++) {
+        const SendEnt& e = list[idx];
         if (e.dir) continue;
         std::ifstream in(e.f, std::ios::binary);
         if (!in) throw NetError("Tidak bisa membuka: " + e.rel);
-        int64_t left = e.size;
+        if (offsets[idx] > 0) in.seekg((std::streamoff)offsets[idx]);
+        int64_t left = e.size - offsets[idx];
         while (left > 0) {
             size_t want = (size_t)std::min<int64_t>(left, (int64_t)job.buf.size());
             in.read(job.buf.data(), (std::streamsize)want);
@@ -545,7 +629,7 @@ std::string Engine::handshake(Conn& c, int mode, const std::string& pin, const s
     std::vector<uint8_t> mac = authMac(pin, nonce, mode, name);
     c.write(mac.data(), mac.size());
     c.flush();
-    if (c.readByte() != 1) throw NetError(c.readUTF());
+    if (c.readByte() != 1) throw Rejected(c.readUTF());
     c.readUTF();
     return serverName;
 }
@@ -609,6 +693,27 @@ std::vector<RemoteEntry> Engine::remoteList(const std::string& host, int port, c
     return res;
 }
 
+Engine::Outcome Engine::withResume(const std::function<Outcome()>& session) {
+    const int maxTry = 5;
+    for (int attempt = 1;; attempt++) {
+        std::string why;
+        try {
+            return session();
+        } catch (const Rejected& r) {
+            const bool busy = std::string(r.what()).find("sibuk") != std::string::npos;
+            if (cancelled_ || attempt >= maxTry || !busy) throw;
+            why = r.what();
+        } catch (const NetDropped& e) {
+            if (cancelled_ || attempt >= maxTry) throw;
+            why = e.what();
+        }
+        log("Koneksi terputus (" + why + "), mencoba lanjut " + std::to_string(attempt) + "/" + std::to_string(maxTry - 1) + "...");
+        for (int waited = 0; waited < 3000 * attempt && !cancelled_; waited += 250)
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        if (cancelled_) throw Cancelled();
+    }
+}
+
 void Engine::startClient(std::function<Outcome()> block) {
     if (running_.exchange(true)) { finish(false, "Transfer lain masih berjalan", 0, 0); return; }
     cancelled_ = false;
@@ -618,7 +723,11 @@ void Engine::startClient(std::function<Outcome()> block) {
         try { r = block(); }
         catch (const std::exception& e) {
             if (cancelled_) { log("ERR dibatalkan"); r = {false, "Dibatalkan", 0, 0}; }
-            else { log(std::string("ERR ") + e.what()); r = {false, std::string("Gagal: ") + e.what(), 0, 0}; }
+            else {
+                log(std::string("ERR ") + e.what());
+                const bool resumable = dynamic_cast<const NetDropped*>(&e) != nullptr;
+                r = {false, std::string("Gagal: ") + e.what() + (resumable ? ". Kirim ulang untuk melanjutkan dari titik terakhir." : ""), 0, 0};
+            }
         }
         running_ = false;  // dibersihkan sebelum callback agar UI boleh langsung memulai operasi berikutnya
         finish(r.ok, r.msg, r.done, r.total);
@@ -629,41 +738,46 @@ void Engine::startClient(std::function<Outcome()> block) {
 void Engine::send(const std::string& host, int port, const std::string& pin, const std::string& name,
                   const std::vector<fs::path>& srcs) {
     startClient([=]() -> Outcome {
-        Outcome r{false, "", 0, 0};
-        clientJob(host, port, 2, pin, name, [&](Conn& c, const std::string& peer) {
-            log("OK     terautentikasi ke " + peer);
-            r = sendSession(c, srcs, peer);
+        return withResume([&]() -> Outcome {
+            Outcome r{false, "", 0, 0};
+            clientJob(host, port, 2, pin, name, [&](Conn& c, const std::string& peer) {
+                log("OK     terautentikasi ke " + peer);
+                r = sendSession(c, srcs, peer);
+            });
+            return r;
         });
-        return r;
     });
 }
 
 void Engine::push(const std::string& host, int port, const std::string& pin, const std::string& name,
                   const std::vector<fs::path>& srcs, const std::string& remoteDir) {
     startClient([=]() -> Outcome {
+      return withResume([&]() -> Outcome {
         Outcome r{false, "", 0, 0};
         clientJob(host, port, 5, pin, name, [&](Conn& c, const std::string& peer) {
             log("OK     terautentikasi ke " + peer);
             c.writeUTF(remoteDir);
             c.flush();
-            if (c.readByte() != 1) throw NetError("Ditolak penerima: " + c.readUTF());
+            if (c.readByte() != 1) throw Rejected("Ditolak penerima: " + c.readUTF());
             c.readUTF();
             r = sendSession(c, srcs, peer);
         });
         return r;
+      });
     });
 }
 
 void Engine::pull(const std::string& host, int port, const std::string& pin, const std::string& name,
                   const std::vector<std::string>& remotePaths, const fs::path& destDir) {
     startClient([=]() -> Outcome {
+      return withResume([&]() -> Outcome {
         Outcome r{false, "", 0, 0};
         clientJob(host, port, 4, pin, name, [&](Conn& c, const std::string& peer) {
             log("OK     terautentikasi ke " + peer);
             c.writeInt((int32_t)remotePaths.size());
             for (auto& p : remotePaths) c.writeUTF(p);
             c.flush();
-            if (c.readByte() != 1) throw NetError("Ditolak: " + c.readUTF());
+            if (c.readByte() != 1) throw Rejected("Ditolak: " + c.readUTF());
             c.readUTF();
             std::error_code ec;
             fs::create_directories(destDir, ec);
@@ -671,6 +785,7 @@ void Engine::pull(const std::string& host, int port, const std::string& pin, con
             r = receiveSession(c, destDir, peer);
         });
         return r;
+      });
     });
 }
 
