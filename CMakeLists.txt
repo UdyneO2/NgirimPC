@@ -74,6 +74,7 @@ if(WIN32 AND NGIRIMPC_BUILD_APP)
     ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+    add_compile_definitions(UNICODE _UNICODE)
   target_include_directories(NgirimPC PRIVATE
     ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${CMAKE_BINARY_DIR}/gen res src)
   target_compile_definitions(NgirimPC PRIVATE
