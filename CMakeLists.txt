@@ -31,7 +31,7 @@ configure_file(res/ngirimpc_version.h.in ${CMAKE_BINARY_DIR}/gen/ngirimpc_versio
 # ---------------------------------------------------------------- inti portabel + tes (semua OS)
 add_library(ng_core STATIC
   src/core/localops.cpp src/core/mdns.cpp src/core/netio.cpp src/core/proto.cpp
-  src/core/updater_core.cpp src/core/updater.cpp src/core/qr.cpp)
+  src/core/updater_core.cpp src/core/updater.cpp src/core/qr.cpp src/core/sendqueue.cpp)
 target_include_directories(ng_core PUBLIC src/core)
 find_package(Threads REQUIRED)
 target_link_libraries(ng_core PUBLIC Threads::Threads)
@@ -46,6 +46,9 @@ if(NGIRIMPC_BUILD_TESTS)
   add_executable(ng_updater_test tests/updater_test.cpp)
   target_link_libraries(ng_updater_test PRIVATE ng_core)
   add_test(NAME updater COMMAND ng_updater_test)
+  add_executable(ng_queue_test tests/sendqueue_test.cpp)
+  target_link_libraries(ng_queue_test PRIVATE ng_core)
+  add_test(NAME queue COMMAND ng_queue_test)
   add_executable(ng_qr_test tests/qr_test.cpp)
   target_link_libraries(ng_qr_test PRIVATE ng_core)
   add_test(NAME qr COMMAND ng_qr_test)
@@ -71,7 +74,6 @@ if(WIN32 AND NGIRIMPC_BUILD_APP)
     ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
-  add_compile_definitions(UNICODE _UNICODE)
   target_include_directories(NgirimPC PRIVATE
     ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${CMAKE_BINARY_DIR}/gen res src)
   target_compile_definitions(NgirimPC PRIVATE

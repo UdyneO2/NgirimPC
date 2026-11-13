@@ -93,6 +93,8 @@ public:
 
     void cancel();
     bool busy() const { return running_.load(); }
+    /** Dipanggil tepat sekali tiap pekerjaan klien (kirim/unggah/unduh) selesai; dipakai antrean multi-perangkat. */
+    void setClientDone(std::function<void(bool ok, const std::string& msg)> f) { clientDone_ = std::move(f); }
 
 private:
     struct Ent { std::string rel; bool dir; int64_t size; int64_t mtime; };
@@ -127,6 +129,7 @@ private:
     std::string handshake(Conn& c, int mode, const std::string& pin, const std::string& name);
     fs::path resolveRemote(const std::string& p);
     void startClient(std::function<Outcome()> block);
+    std::function<void(bool, const std::string&)> clientDone_;
     Outcome withResume(const std::function<Outcome()>& session);
     void clientJob(const std::string& host, int port, int mode, const std::string& pin, const std::string& name,
                    const std::function<void(Conn&, const std::string&)>& body);

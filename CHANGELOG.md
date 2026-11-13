@@ -1,5 +1,15 @@
 # Changelog NgirimPC
 
+## v2.10.0-alpha.1 - 2026-11-13
+
+Menerapkan Ngirim Android v2.10 (commit 5df9a99), 5 fase. Protokol tidak berubah di v2.10.
+
+### Baru (fase 1-4: tab dan antrean)
+- Bilah tab menyatu dengan bilah judul (tanpa garis pemisah) dan tanpa geser: tab terbuka berbagi lebar, label dipotong lalu hilang bila sempit
+- Tab bisa ditutup dengan tombol X dan berubah menjadi ikon saja; klik ikonnya untuk membukanya lagi
+- Banyak file manager: tombol + membuka tab file manager baru (maksimal 6) dengan folder masing-masing; clipboard dipakai bersama sehingga salin di satu tab bisa ditempel di tab lain; tab file manager terakhir tidak bisa ditutup
+- Antrean multi-perangkat: pairing beberapa perangkat, centang yang ingin dikirimi, file dikirim berurutan dengan status per perangkat (Menunggu, Mengirim, Selesai, Gagal), tombol Ulangi yang gagal; klik nama perangkat untuk memakainya di tab FTP
+
 ## v2.9.0-alpha.1 - 2026-11-12
 
 Sinkronisasi dengan Ngirim Android v2.9: fase 1 (protokol), fase 2 (fitur), fase 3 (tampilan dan installer).

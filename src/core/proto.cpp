@@ -730,6 +730,7 @@ void Engine::startClient(std::function<Outcome()> block) {
             }
         }
         running_ = false;  // dibersihkan sebelum callback agar UI boleh langsung memulai operasi berikutnya
+        if (clientDone_) clientDone_(r.ok, r.msg);
         finish(r.ok, r.msg, r.done, r.total);
         handlers_--;
     }).detach();

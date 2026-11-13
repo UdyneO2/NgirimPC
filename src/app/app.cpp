@@ -22,6 +22,7 @@
 #include "../core/mdns.h"
 #include "../core/proto.h"
 #include "../core/qr.h"
+#include "../core/sendqueue.h"
 #include "../core/sha256.h"
 #include "../core/updater.h"
 #include "../core/updater_core.h"
@@ -110,6 +111,7 @@ struct Ui {
     std::vector<std::string> bookmarks;
     // file manager + FTP
     Pane fm, ftp[2];
+    std::vector<Pane> extraFm;   // file manager tambahan (tab idx 1..5)
     std::vector<std::string> clip;
     bool clipCut = false;
     std::string lang = "auto";  // auto | id | en
@@ -141,6 +143,7 @@ struct Ui {
 } U;
 
 std::unique_ptr<ng::Engine> g_eng;
+std::unique_ptr<ng::SendQueue> g_queue;
 std::unique_ptr<ng::Mdns> g_mdns;
 ng::Callbacks g_cb;
 std::atomic<bool> g_cancel{false};
@@ -578,7 +581,7 @@ void drawProgress() {
                       fmtSize((double)t).c_str(), fmtSize(sp).c_str(), fmtEta(sp > 0 ? (double)(t - d) / sp : -1).c_str());
         ImGui::ProgressBar(frac, ImVec2(-100.f * g_scale, 0), ov);
         ImGui::SameLine();
-        if (ImGui::Button(T("Batal"))) { g_cancel = true; if (g_eng) g_eng->cancel(); }
+        if (ImGui::Button(T("Batal"))) { g_cancel = true; if (g_queue) g_queue->cancel(); if (g_eng) g_eng->cancel(); }
         if (!cur.empty()) ImGui::TextColored(g_pal.dim, "%s", tailEllipsis(cur, 110).c_str());
     } else if (hasRes) {
         ImGui::TextColored(ok ? g_pal.ok : g_pal.err, "%s", i18n::tr(res).c_str());
@@ -704,8 +707,17 @@ void openModal(int kind, const std::vector<std::string>& paths) {
 }
 
 // ------------------------------------------------------------------ tab Lokal
-void drawLocal() {
-    Pane& p = U.fm;
+Pane& fmPane(int idx) {
+    return idx <= 0 || idx > (int)U.extraFm.size() ? U.fm : U.extraFm[(size_t)idx - 1];
+}
+
+void markFmDirty() {
+    U.fm.dirty = true;
+    for (auto& e : U.extraFm) e.dirty = true;
+}
+
+void drawLocal(int idx) {
+    Pane& p = fmPane(idx);
     if (U.quick.empty()) {
         U.quick = {{"Desktop", plat::knownFolder("desktop")}, {"Dokumen", plat::knownFolder("documents")},
                    {"Unduhan", plat::knownFolder("downloads")}, {"Gambar", plat::knownFolder("pictures")}};
@@ -785,7 +797,21 @@ bool resolveTarget(std::string& host, int& port) {
     return false;
 }
 
-void startPair(const std::string& host, int port, const std::string& pin) {
+std::string g_pairName;
+
+// Pakai perangkat ini untuk tab FTP (ketuk nama di daftar perangkat terpasang)
+void useForFtp(const ng::QueueDevice& d) {
+    g_host = d.host;
+    g_port = d.port;
+    U.pairKey = d.pin;
+    U.paired = true;
+    U.pairMsg = "Terhubung ke " + d.host + ":" + std::to_string(d.port);
+    U.ftp[1].path = "/sdcard";
+    U.ftp[1].e.clear();
+    U.ftp[1].dirty = true;
+}
+
+void startPair(const std::string& host, int port, const std::string& pin, const std::string& label) {
     {
         std::lock_guard<std::mutex> l(Sh.mu);
         if (Sh.pairBusy) return;
@@ -800,6 +826,7 @@ void startPair(const std::string& host, int port, const std::string& pin) {
     }).detach();
     g_host = host;
     g_port = port;
+    g_pairName = label;
     U.pairKey = pin;
     U.pairMsg = "Menghubungkan...";
 }
@@ -816,7 +843,11 @@ void pollPair() {
     U.paired = err.empty();
     U.pairMsg = err.empty() ? "Terhubung ke " + g_host + ":" + std::to_string(g_port) : err;
     addLog(err.empty() ? "OK     pairing berhasil" : "ERR    pairing: " + err);
-    if (U.paired) { U.ftp[1].dirty = true; U.ftp[1].path = "/sdcard"; }
+    if (U.paired) {
+        U.ftp[1].dirty = true;
+        U.ftp[1].path = "/sdcard";
+        if (g_queue) g_queue->upsert(g_pairName.empty() ? g_host : g_pairName, g_host, g_port, U.pairKey);  // masuk daftar kirim
+    }
 }
 
 void toggleListen(bool on) {
@@ -960,7 +991,7 @@ void drawWifi() {
         int pt = 0;
         if (!resolveTarget(h, pt)) U.pairMsg = "Pilih perangkat atau isi alamat dengan format IP:port";
         else if (std::strlen(U.pinBuf) < 4) U.pairMsg = "Isi PIN dari perangkat penerima";
-        else startPair(h, pt, U.pinBuf);
+        else startPair(h, pt, U.pinBuf, trim(U.manualBuf).empty() ? U.selPeer : h);
     }
     ImGui::EndDisabled();
     if (!U.pairMsg.empty()) ImGui::TextColored(U.paired ? g_pal.ok : g_pal.dim, "%s", i18n::tr(U.pairMsg).c_str());
@@ -968,6 +999,36 @@ void drawWifi() {
         ImGui::SameLine();
         if (ImGui::SmallButton(T("Putuskan"))) { U.paired = false; U.pairMsg.clear(); U.ftp[1].e.clear(); addLog("OK     pairing diputuskan"); }
     }
+
+    ImGui::Separator();
+    ImGui::TextColored(g_pal.dim, "%s", T("Perangkat terpasang"));
+    if (g_queue) {
+        const std::vector<ng::QueueDevice> devs = g_queue->devices();
+        if (devs.empty()) ImGui::TextColored(g_pal.dim, "%s", T("Belum ada. Lakukan pairing di atas."));
+        for (int i = 0; i < (int)devs.size(); i++) {
+            const ng::QueueDevice& d = devs[(size_t)i];
+            ImGui::PushID(2000 + i);
+            bool chk = d.checked;
+            if (ImGui::Checkbox("##chk", &chk)) g_queue->setChecked(i, chk);
+            ImGui::SameLine();
+            const bool isFtp = U.paired && d.host == g_host && d.port == g_port;
+            const std::string lb = d.name + (isFtp ? "  [FTP]" : "");
+            if (ImGui::Selectable(lb.c_str(), isFtp, 0, ImVec2(210.f * g_scale, 0))) useForFtp(d);
+            ImGui::SameLine();
+            switch (d.status) {
+                case ng::QStatus::Waiting: ImGui::TextColored(g_pal.dim, "%s", T("Menunggu")); break;
+                case ng::QStatus::Sending: ImGui::TextColored(g_pal.accent, "%s", T("Mengirim")); break;
+                case ng::QStatus::Done: ImGui::TextColored(g_pal.ok, "%s", T("Selesai")); break;
+                case ng::QStatus::Failed: ImGui::TextColored(g_pal.err, "%s: %s", T("Gagal"), tailEllipsis(d.message, 40).c_str()); break;
+                case ng::QStatus::Cancelled: ImGui::TextColored(g_pal.warn, "%s", T("Dibatalkan")); break;
+                default: break;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(T("Lepas"))) { g_queue->remove(i); ImGui::PopID(); break; }
+            ImGui::PopID();
+        }
+    }
+    ImGui::TextColored(g_pal.dim, "%s", T("Centang perangkat yang dikirimi; ketuk nama untuk dipakai di tab FTP."));
 
     ImGui::Separator();
     ImGui::TextColored(g_pal.dim, T("Daftar kirim (tarik-lepas file ke jendela ini)"));
@@ -994,13 +1055,23 @@ void drawWifi() {
                          U.sendList.end());
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(!U.paired || U.sendList.empty() || busy());
-    if (ImGui::Button(T("Kirim"))) {
+    const size_t nChk = g_queue ? g_queue->checkedCount() : 0;
+    const bool qrun = g_queue && g_queue->running();
+    ImGui::BeginDisabled(nChk == 0 || U.sendList.empty() || busy() || qrun);
+    char kb[80];
+    std::snprintf(kb, sizeof kb, T("Kirim ke %d perangkat"), (int)nChk);
+    if (ImGui::Button(kb)) {
         std::vector<fs::path> src;
         for (auto& s : U.sendList) src.push_back(ng::P(s.path));
-        g_eng->send(g_host, g_port, U.pairKey, U.devName, src);
+        if (g_queue->start(src)) addLog("OK     mengirim ke " + std::to_string(nChk) + " perangkat");
     }
     ImGui::EndDisabled();
+    if (g_queue && !qrun && g_queue->anyFailed()) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy());
+        if (ImGui::Button(T("Ulangi yang gagal"))) g_queue->retryFailed();
+        ImGui::EndDisabled();
+    }
     ImGui::EndChild();
 }
 
@@ -1158,7 +1229,7 @@ void drawSettings() {
             }
         }
     }
-    if (ImGui::Checkbox(T("Tampilkan file tersembunyi"), &U.showHidden)) { U.fm.dirty = true; saveSettings(); }
+    if (ImGui::Checkbox(T("Tampilkan file tersembunyi"), &U.showHidden)) { markFmDirty(); saveSettings(); }
     if (ImGui::Checkbox(T("Hapus ke Tempat Sampah"), &U.useTrash)) saveSettings();
 
     ImGui::Separator();
@@ -1214,6 +1285,198 @@ void drawLog() {
     ImGui::EndChild();
 }
 
+
+// ------------------------------------------------------------------ tab fleksibel (v2.10)
+enum class TabKind { Files, Wifi, Ftp, Settings, Log };
+struct TabInfo {
+    TabKind kind;
+    int idx = 0;       // nomor file manager (0 = utama)
+    bool open = true;  // false = hanya ikon; ketuk ikon untuk membuka lagi
+};
+std::vector<TabInfo> g_tabs = {{TabKind::Files, 0, true}, {TabKind::Wifi, 0, true}, {TabKind::Ftp, 0, true},
+                               {TabKind::Settings, 0, true}, {TabKind::Log, 0, true}};
+int g_activeTab = 0;
+
+std::string tabLabel(const TabInfo& t) {
+    switch (t.kind) {
+        case TabKind::Files: return std::string(T("Lokal")) + (t.idx > 0 ? " " + std::to_string(t.idx + 1) : "");
+        case TabKind::Wifi: return T("Wi-Fi");
+        case TabKind::Ftp: return T("FTP");
+        case TabKind::Settings: return T("Pengaturan");
+        case TabKind::Log: return T("Log");
+    }
+    return "";
+}
+
+int openTabCount() {
+    int n = 0;
+    for (auto& t : g_tabs) if (t.open) n++;
+    return n;
+}
+
+int openFilesCount() {
+    int n = 0;
+    for (auto& t : g_tabs) if (t.open && t.kind == TabKind::Files) n++;
+    return n;
+}
+
+// Tab file manager terakhir yang terbuka tidak boleh ditutup; minimal satu tab harus terbuka.
+bool canCloseTab(int i) {
+    const TabInfo& t = g_tabs[(size_t)i];
+    if (!t.open || openTabCount() <= 1) return false;
+    return !(t.kind == TabKind::Files && openFilesCount() <= 1);
+}
+
+void activateTab(int i) {
+    if (i < 0 || i >= (int)g_tabs.size()) return;
+    g_tabs[(size_t)i].open = true;
+    g_activeTab = i;
+}
+
+void closeTab(int i) {
+    if (!canCloseTab(i)) return;
+    g_tabs[(size_t)i].open = false;
+    if (g_activeTab == i) {   // pindah ke tab terbuka terdekat di kiri, lalu kanan
+        for (int k = i - 1; k >= 0; k--) if (g_tabs[(size_t)k].open) { g_activeTab = k; return; }
+        for (int k = i + 1; k < (int)g_tabs.size(); k++) if (g_tabs[(size_t)k].open) { g_activeTab = k; return; }
+    }
+}
+
+// File manager milik tab aktif (atau yang utama bila tab aktif bukan file manager)
+Pane& activeFm() {
+    const TabInfo& t = g_tabs[(size_t)g_activeTab];
+    return t.kind == TabKind::Files ? fmPane(t.idx) : U.fm;
+}
+
+constexpr int kMaxFm = 6;
+
+int fmTabCount() {
+    int n = 0;
+    for (auto& t : g_tabs) if (t.kind == TabKind::Files) n++;
+    return n;
+}
+
+// Tombol +: file manager baru dengan folder awal sama seperti tab aktif; clipboard dipakai bersama (U.clip)
+void addFmTab() {
+    if (fmTabCount() >= kMaxFm) return;
+    int ins = 0;
+    for (int i = 0; i < (int)g_tabs.size(); i++) if (g_tabs[(size_t)i].kind == TabKind::Files) ins = i + 1;
+    Pane np;
+    np.path = activeFm().path;
+    np.dirty = true;
+    U.extraFm.push_back(np);
+    g_tabs.insert(g_tabs.begin() + ins, TabInfo{TabKind::Files, (int)U.extraFm.size(), true});
+    g_activeTab = ins;
+}
+
+void drawTabIcon(ImDrawList* dl, TabKind k, ImVec2 c, float r, ImU32 col) {
+    const float t = std::max(1.5f, r * 0.16f);
+    switch (k) {
+        case TabKind::Files:
+            dl->AddRectFilled(ImVec2(c.x - r, c.y - r * 0.85f), ImVec2(c.x - r * 0.15f, c.y - r * 0.45f), col);
+            dl->AddRect(ImVec2(c.x - r, c.y - r * 0.55f), ImVec2(c.x + r, c.y + r * 0.75f), col, 0.f, 0, t);
+            break;
+        case TabKind::Wifi: {
+            const ImVec2 o(c.x, c.y + r * 0.7f);
+            for (float rr : {0.55f, 1.0f, 1.45f}) {
+                dl->PathArcTo(o, r * rr, -2.356f, -0.785f, 12);
+                dl->PathStroke(col, 0, t);
+            }
+            dl->AddCircleFilled(o, t * 1.2f, col);
+            break;
+        }
+        case TabKind::Ftp:
+            dl->AddLine(ImVec2(c.x - r, c.y - r * 0.4f), ImVec2(c.x + r * 0.7f, c.y - r * 0.4f), col, t);
+            dl->AddTriangleFilled(ImVec2(c.x + r, c.y - r * 0.4f), ImVec2(c.x + r * 0.45f, c.y - r * 0.8f), ImVec2(c.x + r * 0.45f, c.y), col);
+            dl->AddLine(ImVec2(c.x + r, c.y + r * 0.4f), ImVec2(c.x - r * 0.7f, c.y + r * 0.4f), col, t);
+            dl->AddTriangleFilled(ImVec2(c.x - r, c.y + r * 0.4f), ImVec2(c.x - r * 0.45f, c.y), ImVec2(c.x - r * 0.45f, c.y + r * 0.8f), col);
+            break;
+        case TabKind::Settings: {
+            const float ys[3] = {-0.6f, 0.f, 0.6f}, xs[3] = {-0.35f, 0.4f, -0.1f};
+            for (int i = 0; i < 3; i++) {
+                dl->AddLine(ImVec2(c.x - r, c.y + r * ys[i]), ImVec2(c.x + r, c.y + r * ys[i]), col, t);
+                dl->AddCircleFilled(ImVec2(c.x + r * xs[i], c.y + r * ys[i]), t * 1.7f, col);
+            }
+            break;
+        }
+        case TabKind::Log:
+            dl->AddLine(ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), col, t);
+            dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r * 0.5f, c.y), col, t);
+            dl->AddLine(ImVec2(c.x - r, c.y + r * 0.6f), ImVec2(c.x + r * 0.85f, c.y + r * 0.6f), col, t);
+            break;
+    }
+}
+
+// Deretan tab di dalam pita judul. Tab terbuka berbagi lebar; label dipotong lalu hilang bila sempit; tab tertutup = ikon.
+void drawTabStrip(ImDrawList* dl, float x0, float y0, float fullW, float h) {
+    const float s = g_scale;
+    const float plusW = 34.f * s, totalW = fullW - plusW;
+    bool addClicked = false;
+    const int n = (int)g_tabs.size();
+    const int nOpen = openTabCount(), nIcon = n - nOpen;
+    const float iconW = 40.f * s, maxW = 170.f * s;
+    float wOpen = nOpen > 0 ? (totalW - nIcon * iconW) / (float)nOpen : 0.f;
+    wOpen = std::max(iconW, std::min(maxW, wOpen));
+    const bool showLabel = wOpen >= 84.f * s;
+    const bool showX = wOpen >= 60.f * s;
+    const ImVec4 bgc = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    const ImU32 white = IM_COL32(255, 255, 255, 235);
+    float x = x0;
+    for (int i = 0; i < n; i++) {
+        TabInfo& t = g_tabs[(size_t)i];
+        const bool active = t.open && i == g_activeTab;
+        const float w = t.open ? wOpen : iconW;
+        const ImVec2 a(x, y0 + 4.f * s), b(x + w - 2.f * s, y0 + h);
+        const float xw = (t.open && showX && canCloseTab(i)) ? 26.f * s : 0.f;
+
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(i);
+        const bool clicked = ImGui::InvisibleButton("##tab", ImVec2(b.x - a.x - xw, b.y - a.y));
+        const bool hover = ImGui::IsItemHovered();
+        bool xClicked = false, xHover = false;
+        if (xw > 0.f) {
+            ImGui::SetCursorScreenPos(ImVec2(b.x - xw, a.y));
+            xClicked = ImGui::InvisibleButton("##x", ImVec2(xw, b.y - a.y));
+            xHover = ImGui::IsItemHovered();
+        }
+        ImGui::PopID();
+
+        if (active) dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(bgc), 6.f * s, ImDrawFlags_RoundCornersTop);
+        else if (hover || xHover) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 38), 6.f * s, ImDrawFlags_RoundCornersTop);
+        const ImU32 fg = active ? g_pal.text : white;
+        const float cy = (a.y + b.y) * 0.5f, r = 7.f * s;
+        const float icx = t.open && showLabel ? a.x + 16.f * s : (a.x + (b.x - xw)) * 0.5f;
+        drawTabIcon(dl, t.kind, ImVec2(icx, cy), r, fg);
+        if (t.open && showLabel) {
+            const std::string lb = tabLabel(t);
+            dl->PushClipRect(ImVec2(a.x + 28.f * s, a.y), ImVec2(b.x - xw - 2.f * s, b.y), true);
+            dl->AddText(ImVec2(a.x + 28.f * s, cy - ImGui::GetFontSize() * 0.5f), fg, lb.c_str());
+            dl->PopClipRect();
+        }
+        if (xw > 0.f && (active || hover || xHover)) {
+            const ImVec2 xc(b.x - xw * 0.5f, cy);
+            const float d = 4.f * s;
+            dl->AddLine(ImVec2(xc.x - d, xc.y - d), ImVec2(xc.x + d, xc.y + d), xHover ? IM_COL32(220, 60, 50, 255) : fg, 1.6f * s);
+            dl->AddLine(ImVec2(xc.x - d, xc.y + d), ImVec2(xc.x + d, xc.y - d), xHover ? IM_COL32(220, 60, 50, 255) : fg, 1.6f * s);
+        }
+        if (xClicked) closeTab(i);
+        else if (clicked) activateTab(i);
+        x += w;
+    }
+    {   // tombol + (file manager baru); redup bila sudah mencapai batas
+        const bool full = fmTabCount() >= kMaxFm;
+        const ImVec2 a(x + 2.f * s, y0 + 4.f * s), b(a.x + 30.f * s, y0 + h);
+        ImGui::SetCursorScreenPos(a);
+        addClicked = ImGui::InvisibleButton("##plus", ImVec2(b.x - a.x, b.y - a.y));
+        if (ImGui::IsItemHovered() && !full) dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 38), 6.f * s, ImDrawFlags_RoundCornersTop);
+        const ImU32 c = full ? IM_COL32(255, 255, 255, 90) : white;
+        const ImVec2 m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+        dl->AddLine(ImVec2(m.x - 6.f * s, m.y), ImVec2(m.x + 6.f * s, m.y), c, 1.8f * s);
+        dl->AddLine(ImVec2(m.x, m.y - 6.f * s), ImVec2(m.x, m.y + 6.f * s), c, 1.8f * s);
+        if (addClicked && !full) addFmTab();
+    }
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------ titik masuk (dipanggil main_win.cpp)
@@ -1229,6 +1492,12 @@ void init(float dpiScale) {
     g_upd = std::make_unique<ng::Updater>(kVersion, plat::makeUpdaterIO());
     initCallbacks();
     g_eng = std::make_unique<ng::Engine>(g_cb);
+    g_queue = std::make_unique<ng::SendQueue>([](const ng::QueueDevice& d, const std::vector<fs::path>& f) {
+        if (!g_eng || busy()) return false;
+        g_eng->send(d.host, d.port, d.pin, U.devName, f);
+        return true;
+    });
+    g_eng->setClientDone([](bool ok, const std::string& m) { if (g_queue) g_queue->onFinished(ok, m); });
     g_mdns = std::make_unique<ng::Mdns>([](const std::string& m) { addLog(m); });
     g_mdns->start();
     addLog(std::string("Ngirim PC v") + kVersion + " dimulai");
@@ -1260,15 +1529,17 @@ void frame() {
         std::lock_guard<std::mutex> l(Sh.mu);
         if (Sh.refreshAll) {
             Sh.refreshAll = false;
-            U.fm.dirty = U.ftp[0].dirty = true;
+            markFmDirty();
+            U.ftp[0].dirty = true;
             if (U.paired) U.ftp[1].dirty = true;
         }
     }
-    const float barH = 40.f * g_scale;
+    const float barH = 40.f * g_scale, tabH = 36.f * g_scale, bandH = barH + tabH;
+    if (U.tabReq == kTabWifi) for (int i = 0; i < (int)g_tabs.size(); i++) if (g_tabs[(size_t)i].kind == TabKind::Wifi) activateTab(i);
     {   // bilah judul: biru (gelap pada tema gelap), nama + versi di kiri, status terima di kanan
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-        dl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + barH), ImGui::ColorConvertFloat4ToU32(g_pal.title));
+        dl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + bandH), ImGui::ColorConvertFloat4ToU32(g_pal.title));
         const float fs = ImGui::GetFontSize(), tsz = fs * 1.15f;
         const ImU32 white = IM_COL32(255, 255, 255, 255);
         ImFont* bf = g_bold ? g_bold : ImGui::GetFont();
@@ -1282,24 +1553,26 @@ void frame() {
         else std::snprintf(st, sizeof st, "%s", T("Tidak menerima"));
         const float sw = ImGui::GetFont()->CalcTextSizeA(fs * 0.92f, FLT_MAX, 0.f, st).x;
         dl->AddText(ImGui::GetFont(), fs * 0.92f, ImVec2(wp.x + ws.x - sw - 12.f * g_scale, wp.y + (barH - fs * 0.92f) * 0.5f), white, st);
+        drawTabStrip(dl, wp.x + 8.f * g_scale, wp.y + barH, ws.x - 16.f * g_scale, tabH);
     }
-    ImGui::SetCursorPosY(barH + 8.f * g_scale);
+    ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x, bandH + 8.f * g_scale));
+    if (g_queue) g_queue->pump();
     drawUpdateBanner();
     drawProgress();
     ImGui::BeginChild("##main", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), ImGuiChildFlags_None);
-    if (ImGui::BeginTabBar("##tabs")) {
-        if (ImGui::BeginTabItem(T("Lokal"))) { drawLocal(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem(T("Wi-Fi"), nullptr, U.tabReq == kTabWifi ? ImGuiTabItemFlags_SetSelected : 0)) { drawWifi(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem(T("FTP"))) { drawFtp(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem(T("Pengaturan"))) { drawSettings(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem(T("Log"))) { drawLog(); ImGui::EndTabItem(); }
-        ImGui::EndTabBar();
+    switch (g_tabs[(size_t)g_activeTab].kind) {
+        case TabKind::Files: drawLocal(g_tabs[(size_t)g_activeTab].idx); break;
+        case TabKind::Wifi: drawWifi(); break;
+        case TabKind::Ftp: drawFtp(); break;
+        case TabKind::Settings: drawSettings(); break;
+        case TabKind::Log: drawLog(); break;
     }
     ImGui::EndChild();
     {   // bilah status: folder aktif, jumlah terpilih, isi clipboard
         int selN = 0;
-        for (auto& e : U.fm.e) if (e.sel) selN++;
-        std::string st = U.fm.path.empty() ? std::string(T("Komputer ini")) : tailEllipsis(U.fm.path, 70);
+        const Pane& ap = activeFm();
+        for (auto& e : ap.e) if (e.sel) selN++;
+        std::string st = ap.path.empty() ? std::string(T("Komputer ini")) : tailEllipsis(ap.path, 70);
         if (selN) st += "     " + std::to_string(selN) + " " + T("dipilih");
         if (!U.clip.empty()) st += "     " + std::to_string(U.clip.size()) + " " + T("di clipboard");
         ImGui::TextColored(g_pal.dim, "%s", st.c_str());
